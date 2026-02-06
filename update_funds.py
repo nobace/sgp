@@ -44,17 +44,27 @@ def update_funds():
         return
 
     # 3. Buscar Dados na CVM
-    today = datetime.date.today()
-    # Tenta o mês atual, se falhar (início do mês), tenta o anterior
-    for i in range(2):
-        date_ref = today - datetime.timedelta(days=i*30)
-        url = f"https://dados.cvm.gov.br/dados/FIE/MED/DIARIO/DADOS/inf_diario_fie_{date_ref.strftime('%Y%m')}.zip"
+
+    hoje = datetime.date.today()
+    meses_para_tentar = [
+        hoje.strftime('%Y%m'), 
+        (hoje - datetime.timedelta(days=28)).strftime('%Y%m')
+    ]
+    
+    df_cvm = None
+    for mes in meses_para_tentar:
+        url = f"https://dados.cvm.gov.br/dados/FIE/MED/DIARIO/DADOS/inf_diario_fie_{mes}.zip"
         try:
-            print(f"Tentando CVM: {date_ref.strftime('%m/%Y')}...")
+            print(f"Acedendo à CVM: Mês {mes}...")
             df_cvm = pd.read_csv(url, sep=';', compression='zip', encoding='latin1')
+            print(f"Dados de {mes} carregados com sucesso!")
             break
-        except:
-            continue
+        except Exception as e:
+            print(f"Mês {mes} ainda não disponível ou erro: {e}")
+
+    if df_cvm is None:
+        print("❌ Não foi possível obter dados da CVM de nenhum mês recente.")
+        return
     
     # Filtrar cotas mais recentes
     df_cvm = df_cvm.sort_values('DT_COMPTC').drop_duplicates('CNPJ_FUNDO', keep='last')
