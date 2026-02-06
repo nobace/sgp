@@ -7,16 +7,37 @@ import json
 import numpy as np
 
 def fix_br_numbers(series):
-    """Converte strings no formato '1.234,56' ou zeros para float numérico."""
+    """
+    Limpa strings financeiras brasileiras.
+    Exemplo: '1.957,00' -> 1957.0 | '580,00' -> 580.0
+    """
     def clean(val):
-        if val is None or val == "" or str(val).strip() == "0":
+        if val is None or val == "":
             return 0.0
-        val = str(val).replace('.', '').replace(',', '.')
+        
+        # Converte para string e remove espaços
+        s = str(val).strip()
+        
+        # Se for "0" ou "-", retorna zero
+        if s in ["0", "-", "0,00", "0.00"]:
+            return 0.0
+
+        # Lógica de limpeza:
+        # 1. Se tem ponto e vírgula (ex: 1.957,00), remove o ponto e troca a vírgula por ponto
+        if "." in s and "," in s:
+            s = s.replace(".", "").replace(",", ".")
+        # 2. Se tem apenas vírgula (ex: 580,00), troca por ponto
+        elif "," in s:
+            s = s.replace(",", ".")
+        # 3. Se o ponto aparece mas parece ser de milhar (ex: 1.957) 
+        # Esta parte é sensível, vamos tratar via pandas to_numeric no final
+        
         try:
-            return float(val)
+            return float(s)
         except:
             return 0.0
-    return series.apply(clean)
+            
+    return pd.to_numeric(series.apply(clean), errors='coerce').fillna(0.0)
 
 def load_data():
     creds_json = json.loads(st.secrets["GOOGLE_SHEETS_CREDS"])
@@ -115,3 +136,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
