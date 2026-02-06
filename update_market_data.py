@@ -71,6 +71,22 @@ def update_all_market_data():
             except: continue
 
     # --- PARTE D: TESOURO DIRETO (Ajustado para o arquivo real) ---
+    def get_tesouro_url():
+    """Consulta a API do Tesouro para encontrar o link atualizado do CSV"""
+    api_url = "https://www.tesourotransparente.gov.br/ckan/api/3/action/package_show?id=taxas-do-tesouro-direto"
+    try:
+        response = requests.get(api_url, timeout=30)
+        data = response.json()
+        resources = data['result']['resources']
+        # Procura o recurso que contém 'Preço' e 'Taxa' no nome e é um CSV
+        for res in resources:
+            if "Preco" in res['name'] and "Taxa" in res['name'] and res['format'].lower() == "csv":
+                return res['url']
+    except Exception as e:
+        print(f"⚠️ Erro ao consultar API do Tesouro: {e}")
+    # Fallback para o link que você validou caso a API falhe
+    return "https://www.tesourotransparente.gov.br/ckan/dataset/df56aa42-484a-4a59-8184-7676580c81e3/resource/796d2059-14e9-44e3-80c9-2d9e30b405c1/download/precotaxatesourodireto.csv"
+    
     df_td_assets = df_assets[df_assets['type'] == 'TESOURO']
     if not df_td_assets.empty:
         url_td = get_tesouro_url()
