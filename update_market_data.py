@@ -70,33 +70,52 @@ def update_all_market_data():
                 break
             except: continue
 
-    # --- PARTE D: TESOURO DIRETO (Novo Link) ---
+    # --- PARTE D: TESOURO DIRETO (Ajustado para o arquivo real) ---
     df_td_assets = df_assets[df_assets['type'] == 'TESOURO']
     if not df_td_assets.empty:
-        print("🔍 Buscando preços do Tesouro Direto...")
-        # Link persistente para o CSV de preços e taxas        
-        url_td = "https://www.tesourotransparente.gov.br/ckan/dataset/df56aa42-484a-4a59-8184-7676580c81e3/resource/796d2059-14e9-44e3-80c9-2d9e30b405c1/download/precotaxatesourodireto.csv"
+        url_td = get_tesouro_url()
+        print(f"🔍 Buscando Tesouro Direto...")
         try:
+            # Lendo o CSV com as configurações do arquivo real
             df_td = pd.read_csv(url_td, sep=';', decimal=',', encoding='latin1')
             df_td['Data Vencimento'] = pd.to_datetime(df_td['Data Vencimento'], dayfirst=True)
-            # Pegar apenas a data mais recente de processamento do arquivo
             df_td['Data Base'] = pd.to_datetime(df_td['Data Base'], dayfirst=True)
-            ultima_data = df_td['Data Base'].max()
-            df_hoje = df_td[df_td['Data Base'] == ultima_data]
+            
+            # Filtra apenas os preços mais recentes (Data Base mais alta)
+            df_hoje = df_td[df_td['Data Base'] == df_td['Data Base'].max()]
 
             for _, row in df_td_assets.iterrows():
-                ticker = row['ticker']
-                vencimento = 2029 # No seu caso TD_IPCA_29
-                # Lógica simplificada: procura títulos IPCA com vencimento em 2029
-                match = df_hoje[df_hoje['Tipo Titulo'].str.contains("IPCA", na=False) & 
-                                (df_hoje['Data Vencimento'].dt.year == vencimento)]
+                ticker = str(row['ticker']).upper()
+                
+                # 1. Identifica o Ano (ex: 29 -> 2029)
+                digitos = ''.join(filter(str.isdigit, ticker))
+                ano_venc = 2000 + int(digitos) if digitos else None
+                
+                # 2. Identifica o Tipo
+                tipo_busca = "IPCA+"
+                if "SELIC" in ticker: tipo_busca = "Selic"
+                elif "PREFIX" in ticker: tipo_busca = "Prefixado"
+                
+                # 3. Filtro refinado
+                mask = (df_hoje['Tipo Titulo'].str.contains(tipo_busca, case=False, na=False))
+                if "JUROS" in ticker:
+                    mask = mask & (df_hoje['Tipo Titulo'].str.contains("Juros", case=False, na=False))
+                else:
+                    mask = mask & (~df_hoje['Tipo Titulo'].str.contains("Juros", case=False, na=False))
+                
+                if ano_venc:
+                    mask = mask & (df_hoje['Data Vencimento'].dt.year == ano_venc)
+                
+                match = df_hoje[mask]
                 
                 if not match.empty:
-                    preco = match.iloc[0]['Preco Unitario Dia']
-                    precos_finais[ticker] = float(preco)
-                    print(f"✅ {ticker} atualizado: R$ {preco}")
+                    # Usando a coluna 'PU Base Manha' que confirmamos no seu arquivo
+                    preco = float(match.iloc[0]['PU Base Manha'])
+                    precos_finais[row['ticker']] = preco
+                    print(f"✅ {row['ticker']} atualizado: R$ {preco:.2f}")
+                    
         except Exception as e:
-            print(f"⚠️ Erro Tesouro: {e}")
+            print(f"⚠️ Erro ao processar Tesouro: {e}")
 
     # --- FINALIZAÇÃO ---
     for t in df_assets['ticker'].unique():
