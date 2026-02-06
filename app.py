@@ -27,14 +27,25 @@ def load_data():
 
 # Use apenas o ID da planilha (aquela sequência longa de letras e números)
 ID_PLANILHA = "1agsg85drPHHQQHPgUdBKiNQ9_riqV3ZvNxbaZ3upSx8" 
-URL_PLANILHA = f"https://docs.google.com/spreadsheets/d/1agsg85drPHHQQHPgUdBKiNQ9_riqV3ZvNxbaZ3upSx8/export?format=csv"
+def load_data_from_google(sheet_name):
+    # Este formato de URL é o mais aceite pelo Google para exportação de dados
+    url = f"https://docs.google.com/spreadsheets/d/{ID_PLANILHA}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
+    # Adicionamos um tratamento de erro específico para cada aba
+    try:
+        return pd.read_csv(url)
+    except Exception as e:
+        st.error(f"Erro ao ler a aba '{sheet_name}': {e}")
+        return pd.DataFrame()
 
-# Forçamos a conexão a usar este link diretamente
-conn = st.connection("gsheets", type=GSheetsConnection)
-df_assets = conn.read(spreadsheet=URL_PLANILHA, worksheet="assets")
-df_trans = conn.read(spreadsheet=URL_PLANILHA, worksheet="transactions")
-df_market = conn.read(spreadsheet=URL_PLANILHA, worksheet="market_data")
+# Carregamento dos dados
+df_assets = load_data_from_google("assets")
+df_trans = load_data_from_google("transactions")
+df_market = load_data_from_google("market_data")
 
+# Verificação de segurança: Se a aba assets estiver vazia, paramos aqui para diagnosticar
+if df_assets.empty:
+    st.warning("Aguardando carregamento da aba 'assets'...")
+    st.stop()
 
 # Processamento
 def get_positions(df_assets, df_trans, df_market):
@@ -87,6 +98,7 @@ with t2:
 with t3:
 
     st.dataframe(df_pos[['ticker', 'institution', 'type', 'quantity', 'valor_brl']].style.format({'valor_brl': 'R$ {:,.2f}'}), use_container_width=True)
+
 
 
 
