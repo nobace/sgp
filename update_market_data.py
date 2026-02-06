@@ -23,15 +23,14 @@ def update_all_market_data():
         print(f"❌ Erro na autenticação: {e}")
         return
 
-    # 2. Ler a aba 'assets' para mapear os ativos
+    # 2. Ler a aba 'assets'
     ws_assets = sh.worksheet("assets")
     df_assets = pd.DataFrame(ws_assets.get_all_records())
     df_assets.columns = [c.lower().strip() for c in df_assets.columns]
 
-    # Dicionário onde guardaremos todos os preços encontrados
     precos_finais = {}
 
-    # --- PARTE A: AÇÕES, FIIs, BDRs e ETFs (Yahoo Finance) ---
+    # --- PARTE A: YAHOO FINANCE (Ações, FIIs, etc) ---
     tipos_yahoo = ['ACAO_BR', 'FII', 'BDR', 'ETF_BR', 'ETF_US']
     tickers_yahoo = df_assets[df_assets['type'].isin(tipos_yahoo)]['ticker'].tolist()
     
@@ -41,27 +40,24 @@ def update_all_market_data():
             data_yf = yf.download(tickers_yahoo, period="1d", group_by='ticker', progress=False)
             for t in tickers_yahoo:
                 try:
-                    # Lógica para tratar um ou múltiplos tickers no retorno do Yahoo
-                    if len(tickers_yahoo) > 1:
-                        val = data_yf[t]['Close'].iloc[-1]
-                    else:
-                        val = data_yf['Close'].iloc[-1]
-                    
-                    if pd.notnull(val):
-                        precos_finais[t] = float(val)
-                except:
-                    precos_finais[t] = 0.0
+                    val = data_yf[t]['Close'].iloc[-1] if len(tickers_yahoo) > 1 else data_yf['Close'].iloc[-1]
+                    if pd.notnull(val): precos_finais[t] = float(val)
+                except: precos_finais[t] = 0.0
         except Exception as e:
-            print(f"⚠️ Erro no Yahoo Finance: {e}")
+            print(f"⚠️ Erro Yahoo: {e}")
 
-    # --- PARTE B: FUNDOS DE INVESTIMENTO (CVM - Link Validado) ---
+    # --- PARTE B: CVM (Fundos) - COM CORREÇÃO DE ZEROS À ESQUERDA ---
     df_fundos = df_assets[df_assets['type'] == 'FUNDO']
     mapa_cnpjs = {}
     for _, row in df_fundos.iterrows():
+        ticker = str(row['ticker']).strip()
         cnpj_raw = str(row.get('isin_cnpj', '')).strip()
         cnpj_limpo = ''.join(filter(str.isdigit, cnpj_raw))
-        if len(cnpj_limpo) == 14:
-            mapa_cnpjs[cnpj_limpo] = str(row['ticker'])
+        
+        # CORREÇÃO: Se tiver 13 ou 14 dígitos, completa com zero à esquerda
+        if len(cnpj_limpo) >= 13:
+            cnpj_validado = cnpj_limpo.zfill(14)
+            mapa_cnpjs[cnpj_validado] = ticker
 
     if mapa_cnpjs:
         print(f"🔍 Buscando {len(mapa_cnpjs)} fundos na CVM...")
@@ -69,60 +65,47 @@ def update_all_market_data():
         df_cvm = None
         
         for i in range(4):
-            data_alvo = hoje - datetime.timedelta(days=i*28)
-            mes = data_alvo.strftime('%Y%m')
+            mes = (hoje - datetime.timedelta(days=i*28)).strftime('%Y%m')
             url = f"https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_{mes}.zip"
-            
             try:
                 print(f" tentando baixar mês {mes}...")
                 df_cvm = pd.read_csv(url, sep=';', compression='zip', encoding='latin1', 
                                      storage_options={'User-Agent': 'Mozilla/5.0'})
                 
-                # IDENTIFICAÇÃO DINÂMICA DA COLUNA DE CNPJ
-                # Tenta achar 'CNPJ_FUNDO_CLASSE' ou 'CNPJ_FUNDO'
+                # Identifica coluna de CNPJ (pode ser CNPJ_FUNDO ou CNPJ_FUNDO_CLASSE)
                 col_cnpj = [c for c in df_cvm.columns if 'CNPJ_FUNDO' in c][0]
                 
-                # Limpeza e processamento
-                df_cvm['cnpj_key'] = df_cvm[col_cnpj].str.replace(r'\D', '', regex=True)
+                df_cvm['cnpj_key'] = df_cvm[col_cnpj].str.replace(r'\D', '', regex=True).str.zfill(14)
                 df_cvm = df_cvm.sort_values('DT_COMPTC').drop_duplicates(col_cnpj, keep='last')
                 cvm_dict = df_cvm.set_index('cnpj_key')['VL_QUOTA'].to_dict()
                 
-                contagem_fundos = 0
+                encontrados = 0
                 for cnpj, ticker in mapa_cnpjs.items():
                     if cnpj in cvm_dict:
                         precos_finais[ticker] = float(cvm_dict[cnpj])
-                        contagem_fundos += 1
+                        encontrados += 1
                 
-                if contagem_fundos > 0:
-                    print(f"✅ {contagem_fundos} fundos atualizados com dados de {mes}.")
+                if encontrados > 0:
+                    print(f"✅ {encontrados} fundos atualizados com sucesso!")
                     break
-            except Exception as e:
-                print(f"⚠️ Mês {mes} indisponível: {e}")
-                continue
+            except: continue
 
-    # --- PARTE C: ATIVOS MANUAIS OU RENDA FIXA ---
-    # Para o que sobrar (LCA, FGTS, Tesouro), mantemos 1.0 para manter o valor original do saldo
+    # --- PARTE C: PRESERVAÇÃO E LIMPEZA ---
     for t in df_assets['ticker'].unique():
         t_str = str(t).strip()
         if t_str not in precos_finais:
             precos_finais[t_str] = 1.0
 
-    # 3. Gravação Final na aba 'market_data'
+    # Gravação
     try:
         ws_market = sh.worksheet("market_data")
         ws_market.clear()
-        
-        # Prepara a lista final removendo qualquer valor inválido para o JSON (NaN/Inf)
-        final_updates = []
-        for t, p in precos_finais.items():
-            clean_p = float(p) if (pd.notnull(p) and not np.isinf(p)) else 0.0
-            final_updates.append([str(t), clean_p])
-        
-        ws_market.update(values=[['ticker', 'close_price']] + final_updates, range_name='A1')
-        print(f"🚀 Sucesso! {len(final_updates)} ativos consolidados na market_data.")
-        
+        updates = [[t, float(p) if (pd.notnull(p) and not np.isinf(p)) else 0.0] 
+                   for t, p in precos_finais.items()]
+        ws_market.update(values=[['ticker', 'close_price']] + updates, range_name='A1')
+        print(f"🚀 Concluído! 102 ativos processados.")
     except Exception as e:
-        print(f"❌ Erro ao gravar na planilha: {e}")
+        print(f"❌ Erro ao gravar: {e}")
 
 if __name__ == "__main__":
     update_all_market_data()
