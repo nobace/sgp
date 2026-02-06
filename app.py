@@ -49,40 +49,56 @@ if df_assets.empty:
 
 # Processamento
 def get_positions(df_assets, df_trans, df_market):
-    # 1. Garantir que as quantidades e preços sejam numéricos (Limpando possíveis textos/vírgulas)
-    for df in [df_trans, df_market]:
-        for col in ['quantity', 'close_price']:
-            if col in df.columns:
-                # Transforma para string, troca vírgula por ponto e remove R$ ou outros símbolos
-                df[col] = pd.to_numeric(
-                    df[col].astype(str)
-                           .str.replace('R$', '', regex=False)
-                           .str.replace('.', '', regex=False) # Remove ponto de milhar se houver
-                           .str.replace(',', '.', regex=False) # Troca vírgula decimal por ponto
-                           .str.strip(), 
-                    errors='coerce'
-                ).fillna(0) # Se falhar, vira zero para não travar o cálculo
+    # Função auxiliar para limpar números brasileiros (vírgula para ponto)
+    def clean_num(value):
+        try:
+            if pd.isna(value) or value == "": return 0.0
+            # Remove R$, pontos de milhar e troca vírgula por ponto
+            s = str(value).replace('R$', '').replace(' ', '').strip()
+            if '.' in s and ',' in s: # Caso tenha 1.234,56
+                s = s.replace('.', '')
+            s = s.replace(',', '.')
+            return float(s)
+        except:
+            return 0.0
 
-    # 2. Agrupar quantidades por ticker e instituição
+    # Aplicar limpeza nas colunas críticas
+    for col in ['quantity', 'price']:
+        if col in df_trans.columns:
+            df_trans[col] = df_trans[col].apply(clean_num)
+    
+    if 'close_price' in df_market.columns:
+        df_market['close_price'] = df_market['close_price'].apply(clean_num)
+
+    # Agrupar quantidades
     pos = df_trans.groupby(['ticker', 'institution'])['quantity'].sum().reset_index()
     pos = pos.merge(df_assets, on='ticker', how='left')
     pos = pos.merge(df_market[['ticker', 'close_price']], on='ticker', how='left')
     
-    # 3. Câmbio com tratamento de erro (Yahoo ou Fallback)
+    # Câmbio com Fallback para não travar
     try:
-        usd_quote = yf.Ticker("BRL=X").fast_info['last_price']
-        if not usd_quote: raise ValueError()
+        # Usando um período curto para evitar limite do Yahoo
+        usd_quote = yf.Ticker("BRL=X").history(period="1d")['Close'].iloc[-1]
     except:
         usd_quote = 5.85
     
-    # 4. Cálculo final (Garantindo que os tipos batam)
-    pos['valor_brl'] = pos.apply(
-        lambda x: (float(x['quantity']) * float(x['close_price']) * float(usd_quote)) 
-        if str(x['currency']).upper() == 'USD' 
-        else (float(x['quantity']) * float(x['close_price'])), 
-        axis=1
-    )
+    # Cálculo do Valor BRL
+    def calc_brl(row):
+        qtd = float(row['quantity'])
+        preco = float(row['close_price'])
+        if str(row['currency']).upper() == 'USD':
+            return qtd * preco * usd_quote
+        return qtd * preco
+
+    pos['valor_brl'] = pos.apply(calc_brl, axis=1)
     return pos, usd_quote
+
+# No bloco de métricas, adicione uma proteção contra divisão por zero:
+total_brl = df_pos['valor_brl'].sum()
+if total_brl > 0:
+    idx_dolar = (dolarizados / total_brl) * 100
+else:
+    idx_dolar = 0.0
 
 df_pos, dolar = get_positions(df_assets, df_trans, df_market)
 
@@ -119,6 +135,7 @@ with t2:
 with t3:
 
     st.dataframe(df_pos[['ticker', 'institution', 'type', 'quantity', 'valor_brl']].style.format({'valor_brl': 'R$ {:,.2f}'}), use_container_width=True)
+
 
 
 
