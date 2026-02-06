@@ -118,7 +118,7 @@ def update_all_market_data():
             
         # Converte para string com vírgula para "travar" a formatação no Sheets
         valor_br = f"{float(valor_num):.2f}".replace('.', ',')
-        output.append([t_str, valor_br, agora])
+        output.append([t_str, valor_num, agora])
 
     # Adicionar Dólar
     if 'USDBRL=X' in precos_finais:
