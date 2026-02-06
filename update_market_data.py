@@ -7,6 +7,7 @@ import json
 import datetime
 import numpy as np
 import requests
+import io 
 
 def get_tesouro_url():
     api_url = "https://www.tesourotransparente.gov.br/ckan/api/3/action/package_show?id=taxas-do-tesouro-direto"
