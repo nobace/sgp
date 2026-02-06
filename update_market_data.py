@@ -98,7 +98,7 @@ def update_all_market_data():
 
     # --- PARTE FINAL: MONTAGEM DO OUTPUT ---
     output = []
-    tickers_bloqueados = ['FGTS_SALDO', 'PREV_ITAU_ULTRA']
+    tickers_bloqueados = ['FGTS_SALDO', 'PREV_ITAU_ULTRA', 'LCA_SAN_ABR26', 'LCA_SAN_JUN26', 'LCA_DI_FEV26']
 
     for t in df_assets['ticker'].unique():
         t_str = str(t).strip()
