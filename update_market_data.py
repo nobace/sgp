@@ -9,13 +9,15 @@ import requests
 import io
 
 def get_tesouro_url():
+    # Tenta buscar a URL dinâmica do CSV de preços e taxas
     api_url = "https://www.tesourotransparente.gov.br/ckan/api/3/action/package_show?id=taxas-do-tesouro-direto"
     try:
         response = requests.get(api_url, timeout=30)
         data = response.json()
         resources = data['result']['resources']
         for res in resources:
-            if "Preco" in res['name'] and "Taxa" in res['name'] and res['format'].lower() == "csv":
+            # Busca especificamente o arquivo de Preços e Taxas em formato CSV
+            if "PrecoTaxa" in res['name'] or ("Preco" in res['name'] and res['format'].lower() == "csv"):
                 return res['url']
     except: pass
     return "https://www.tesourotransparente.gov.br/ckan/dataset/df56aa42-484a-4a59-8184-7676580c81e3/resource/796d2059-14e9-44e3-80c9-2d9e30b405c1/download/precotaxatesourodireto.csv"
@@ -31,17 +33,13 @@ def update_all_market_data():
         print(f"❌ Erro Autenticação: {e}")
         return
 
-    # 1. Leitura das Abas
     ws_assets = sh.worksheet("assets")
     df_assets = pd.DataFrame(ws_assets.get_all_records())
     df_assets.columns = [c.lower().strip() for c in df_assets.columns]
     
     ws_market = sh.worksheet("market_data")
-    # Lemos os dados brutos da market_data para preservar o que você digitou
     dados_market_atuais = ws_market.get_all_values()
-    headers_m = dados_market_atuais[0]
     
-    # Função para limpar valores que você digita (trata vírgula BR)
     def clean_manual_val(val):
         if val is None or val == "" or val == "close_price": return 1.0
         s = str(val).strip()
@@ -50,13 +48,11 @@ def update_all_market_data():
         try: return float(s)
         except: return 1.0
 
-    # Dicionário de preservação: mapeia ticker -> preço atual na planilha
     precos_preservados = {}
     if len(dados_market_atuais) > 1:
         for row in dados_market_atuais[1:]:
             ticker_m = str(row[0]).strip()
-            preco_m = clean_manual_val(row[1])
-            precos_preservados[ticker_m] = preco_m
+            precos_preservados[ticker_m] = clean_manual_val(row[1])
 
     precos_finais = {}
     agora = datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')
@@ -96,18 +92,44 @@ def update_all_market_data():
                     break
             except: continue
 
+    # --- PARTE C: TESOURO DIRETO (Correção aplicada) ---
+    df_td_assets = df_assets[df_assets['type'] == 'TESOURO']
+    if not df_td_assets.empty:
+        try:
+            url_td = get_tesouro_url()
+            resp_td = requests.get(url_td, timeout=30)
+            df_td = pd.read_csv(io.BytesIO(resp_td.content), sep=';', decimal=',', encoding='latin1')
+            df_td['Data Base'] = pd.to_datetime(df_td['Data Base'], dayfirst=True)
+            df_recente = df_td[df_td['Data Base'] == df_td['Data Base'].max()]
+            
+            for _, row in df_td_assets.iterrows():
+                t_td = str(row['ticker']).strip().upper()
+                # Tenta encontrar por data de vencimento extraída do ticker (Ex: IPCA2029)
+                ano_venc = "".join(filter(str.isdigit, t_td))
+                if len(ano_venc) == 2: ano_venc = "20" + ano_venc
+                
+                tipo_td = "IPCA" if "IPCA" in t_td else "SELIC" if "SELIC" in t_td else "PREFIXADO"
+                
+                mask = (df_recente['Tipo Titulo'].str.upper().str.contains(tipo_td)) & \
+                       (pd.to_datetime(df_recente['Data Vencimento'], dayfirst=True).dt.year == int(ano_venc))
+                
+                if not df_recente[mask].empty:
+                    precos_finais[t_td] = float(df_recente[mask].iloc[0]['PU Base Manha'])
+        except Exception as e:
+            print(f"⚠️ Erro ao atualizar Tesouro: {e}")
+
     # --- PARTE FINAL: MONTAGEM DO OUTPUT ---
     output = []
-    tickers_bloqueados = ['FGTS_SALDO', 'PREV_ITAU_ULTRA', 'LCA_SAN_ABR26', 'LCA_SAN_JUN26', 'LCA_DI_FEV26']
+    # Lista atualizada de ativos bloqueados para atualização manual
+    tickers_manuais = ['FGTS_SALDO', 'PREV_ITAU_ULTRA', 'LCA_SAN_ABR26', 'LCA_SAN_JUN26', 'LCA_DI_FEV26']
 
     for t in df_assets['ticker'].unique():
         t_str = str(t).strip()
         if not t_str: continue
         
-        if t_str in tickers_bloqueados:
-            # Pega o valor que estava na planilha e garante que é FLOAT
+        if t_str in tickers_manuais:
             valor_final = precos_preservados.get(t_str, 1.0)
-            print(f"🔒 Bloqueado: Mantendo {t_str} = {valor_final}")
+            print(f"🔒 Bloqueado: Mantendo manual {t_str} = {valor_final}")
         else:
             valor_final = precos_finais.get(t_str, 1.0)
             
@@ -116,15 +138,9 @@ def update_all_market_data():
     if 'USDBRL=X' in precos_finais:
         output.append(['USDBRL=X', float(precos_finais['USDBRL=X']), agora])
 
-    # GRAVAÇÃO COM VALOR BRUTO (RAW)
-    # Isso evita que o Sheets tente "traduzir" o ponto do Python para milhar
     ws_market.clear()
-    ws_market.update(
-        values=[['ticker', 'close_price', 'last_update']] + output, 
-        range_name='A1',
-        value_input_option='RAW' 
-    )
-    print(f"✅ Atualização concluída com sucesso!")
+    ws_market.update(values=[['ticker', 'close_price', 'last_update']] + output, range_name='A1', value_input_option='RAW')
+    print(f"✅ Atualização concluída.")
 
 if __name__ == "__main__":
     update_all_market_data()
