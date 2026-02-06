@@ -1,13 +1,13 @@
-import streamlit as st
 import pandas as pd
 import plotly.express as px
 import yfinance as yf
+# Adicione esta importação explícita abaixo:
 from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="SGP - Monitor Patrimonial", layout="wide")
 
-# Conexão com Google Sheets
-conn = st.connection("gsheets", type="gsheets")
+# Altere a chamada da conexão para passar a classe explicitamente:
+conn = st.connection("gsheets", type=GSheetsConnection)
 
 @st.cache_data(ttl=3600)
 def load_data():
@@ -67,4 +67,5 @@ with t2:
     st.plotly_chart(fig, use_container_width=True)
 
 with t3:
+
     st.dataframe(df_pos[['ticker', 'institution', 'type', 'quantity', 'valor_brl']].style.format({'valor_brl': 'R$ {:,.2f}'}), use_container_width=True)
