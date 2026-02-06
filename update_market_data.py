@@ -57,24 +57,59 @@ def update_all_market_data():
                 except: pass
         except: pass
 
-    # --- PARTE B: CVM (Fundos) ---
+    # --- PARTE B: CVM (Fundos de Investimento) ---
     df_fundos = df_assets[df_assets['type'] == 'FUNDO']
-    mapa_cnpjs = {str(r['isin_cnpj']).replace('.','').replace('-','').replace('/','').zfill(14): str(r['ticker']).strip() 
-                  for _, r in df_fundos.iterrows() if r.get('isin_cnpj')}
+    
+    # Limpeza rigorosa do CNPJ: remove tudo que não é número e garante 14 dígitos
+    mapa_cnpjs = {}
+    for _, row in df_fundos.iterrows():
+        cnpj_raw = str(row.get('isin_cnpj', '')).strip()
+        cnpj_limpo = ''.join(filter(str.isdigit, cnpj_raw)).zfill(14)
+        if len(cnpj_limpo) == 14:
+            mapa_cnpjs[cnpj_limpo] = str(row['ticker']).strip()
+
     if mapa_cnpjs:
+        print(f"🔍 Buscando {len(mapa_cnpjs)} fundos na CVM...")
         hoje = datetime.date.today()
+        
+        # Tenta os últimos 3 meses para garantir que pegamos o arquivo mais recente disponível
         for i in range(3):
-            mes = (hoje - datetime.timedelta(days=i*28)).strftime('%Y%m')
+            data_alvo = hoje - datetime.timedelta(days=i*28)
+            mes = data_alvo.strftime('%Y%m')
             url = f"https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_{mes}.zip"
+            
             try:
-                df_cvm = pd.read_csv(url, sep=';', compression='zip', encoding='latin1', timeout=60)
-                df_cvm['cnpj_key'] = df_cvm['CNPJ_FUNDO_CLASSE'].str.replace(r'\D', '', regex=True).str.zfill(14)
-                df_cvm = df_cvm.sort_values('DT_COMPTC').drop_duplicates('cnpj_key', keep='last')
-                cvm_dict = df_cvm.set_index('cnpj_key')['VL_QUOTA'].to_dict()
+                # O timeout de 60s é importante pois os arquivos da CVM são grandes
+                response = requests.get(url, timeout=60)
+                if response.status_code != 200:
+                    continue
+                
+                df_cvm = pd.read_csv(io.BytesIO(response.content), sep=';', compression='zip', encoding='latin1')
+                
+                # Identifica a coluna de CNPJ (pode ser CNPJ_FUNDO ou CNPJ_FUNDO_CLASSE)
+                col_cnpj = [c for c in df_cvm.columns if 'CNPJ' in c.upper()][0]
+                col_cota = [c for c in df_cvm.columns if 'VL_QUOTA' in c.upper()][0]
+                col_data = [c for c in df_cvm.columns if 'DT_COMPTC' in c.upper()][0]
+
+                # Limpa os CNPJs do arquivo da CVM para comparação
+                df_cvm['cnpj_key'] = df_cvm[col_cnpj].str.replace(r'\D', '', regex=True).str.zfill(14)
+                
+                # Ordena pela data mais recente e remove duplicados para pegar a cota mais nova
+                df_cvm = df_cvm.sort_values(col_data).drop_duplicates('cnpj_key', keep='last')
+                cvm_dict = df_cvm.set_index('cnpj_key')[col_cota].to_dict()
+                
+                count = 0
                 for cnpj, ticker in mapa_cnpjs.items():
-                    if cnpj in cvm_dict: precos_finais[ticker] = float(cvm_dict[cnpj])
-                break
-            except: continue
+                    if cnpj in cvm_dict:
+                        precos_finais[ticker] = float(cvm_dict[cnpj])
+                        count += 1
+                
+                if count > 0:
+                    print(f"✅ Sucesso: {count} fundos atualizados com dados de {mes}.")
+                    break # Se encontrou dados, não precisa olhar os meses anteriores
+            except Exception as e:
+                print(f"⚠️ Tentativa mês {mes} falhou: {e}")
+                continue
 
     # --- PARTE C: TESOURO DIRETO ---
     df_td_assets = df_assets[df_assets['type'] == 'TESOURO']
