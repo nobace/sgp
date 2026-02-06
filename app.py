@@ -17,13 +17,7 @@ if "connections" not in st.secrets:
 
 
 @st.cache_data(ttl=3600)
-def load_data():
-    assets = conn.read(worksheet="assets")
-    trans = conn.read(worksheet="transactions")
-    market = conn.read(worksheet="market_data")
-    return assets, trans, market
 
-#df_assets, df_trans, df_market = load_data()
 
 # Use apenas o ID da planilha (aquela sequência longa de letras e números)
 ID_PLANILHA = "1agsg85drPHHQQHPgUdBKiNQ9_riqV3ZvNxbaZ3upSx8" 
@@ -135,6 +129,7 @@ with t2:
 with t3:
 
     st.dataframe(df_pos[['ticker', 'institution', 'type', 'quantity', 'valor_brl']].style.format({'valor_brl': 'R$ {:,.2f}'}), use_container_width=True)
+
 
 
 
