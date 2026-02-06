@@ -10,6 +10,10 @@ st.set_page_config(page_title="SGP - Monitor Patrimonial", layout="wide")
 # Altere a chamada da conexão para passar a classe explicitamente:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+# Adicione esta linha logo abaixo para depurar se necessário
+if "connections" not in st.secrets:
+    st.error("Configuração de Secrets não encontrada no Streamlit Cloud!")
+
 @st.cache_data(ttl=3600)
 def load_data():
     assets = conn.read(worksheet="assets")
@@ -70,4 +74,5 @@ with t2:
 with t3:
 
     st.dataframe(df_pos[['ticker', 'institution', 'type', 'quantity', 'valor_brl']].style.format({'valor_brl': 'R$ {:,.2f}'}), use_container_width=True)
+
 
