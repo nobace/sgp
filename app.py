@@ -14,6 +14,8 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 if "connections" not in st.secrets:
     st.error("Configuração de Secrets não encontrada no Streamlit Cloud!")
 
+
+
 @st.cache_data(ttl=3600)
 def load_data():
     assets = conn.read(worksheet="assets")
@@ -21,7 +23,17 @@ def load_data():
     market = conn.read(worksheet="market_data")
     return assets, trans, market
 
-df_assets, df_trans, df_market = load_data()
+#df_assets, df_trans, df_market = load_data()
+
+# Substitua pela sua URL real da planilha do Google
+URL_PLANILHA = "https://docs.google.com/spreadsheets/d/SEU_ID_AQUI/edit#gid=0"
+
+# Forçamos a conexão a usar este link diretamente
+conn = st.connection("gsheets", type=GSheetsConnection)
+df_assets = conn.read(spreadsheet=URL_PLANILHA, worksheet="assets")
+df_trans = conn.read(spreadsheet=URL_PLANILHA, worksheet="transactions")
+df_market = conn.read(spreadsheet=URL_PLANILHA, worksheet="market_data")
+
 
 # Processamento
 def get_positions(df_assets, df_trans, df_market):
@@ -74,5 +86,6 @@ with t2:
 with t3:
 
     st.dataframe(df_pos[['ticker', 'institution', 'type', 'quantity', 'valor_brl']].style.format({'valor_brl': 'R$ {:,.2f}'}), use_container_width=True)
+
 
 
