@@ -15,11 +15,7 @@ jobs:
           python-version: '3.11'
       - name: Install Libs
         run: pip install yfinance gspread google-auth pandas
-      - name: Execute Script
+      - name: Execute Global Update
         env:
           GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
-        run: python update_prices.py
-      - name: Execute Update Funds
-        env:
-          GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
-        run: python update_funds.py 
+        run: python update_market_data.py
