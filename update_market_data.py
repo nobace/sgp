@@ -31,19 +31,22 @@ def update_all_market_data():
         print(f"❌ Erro Autenticação: {e}")
         return
 
-    # Lendo as abas
     df_assets = pd.DataFrame(sh.worksheet("assets").get_all_records())
     df_assets.columns = [c.lower().strip() for c in df_assets.columns]
-    
     df_trans = pd.DataFrame(sh.worksheet("transactions").get_all_records())
     df_trans.columns = [c.lower().strip() for c in df_trans.columns]
 
     precos_finais = {}
     agora = datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')
 
-    # --- PARTE A: YAHOO FINANCE ---
+    # --- PARTE A: YAHOO FINANCE (Incluindo Dólar) ---
     tipos_yahoo = ['ACAO_BR', 'FII', 'BDR', 'ETF_BR', 'ETF_US']
     tickers_yahoo = df_assets[df_assets['type'].isin(tipos_yahoo)]['ticker'].unique().tolist()
+    
+    # Adiciona o Dólar à lista de busca se houver ativos em USD
+    if 'USD' in df_assets['currency'].values:
+        tickers_yahoo.append('USDBRL=X')
+
     if tickers_yahoo:
         try:
             data_yf = yf.download(tickers_yahoo, period="1d", group_by='ticker', progress=False)
@@ -89,35 +92,32 @@ def update_all_market_data():
                     precos_finais[str(row['ticker']).strip()] = float(df_hoje[mask].iloc[0]['PU Base Manha'])
         except: pass
 
-    # --- PARTE E: ATIVOS DE SALDO FIXO (FGTS, PREVIDÊNCIA, LCA, CDB) ---
-    # Para estes, pegamos o preço da última transação registrada para o ticker
+    # --- PARTE E: ATIVOS DE SALDO FIXO ---
     tipos_fixos = ['FGTS', 'PREVIDENCIA', 'LCA', 'CDB']
-    df_fixos = df_assets[df_assets['type'].isin(tipos_fixos)]
-    for _, row in df_fixos.iterrows():
+    for _, row in df_assets[df_assets['type'].isin(tipos_fixos)].iterrows():
         t = str(row['ticker']).strip()
-        # Busca na aba transactions o último 'price' para este ticker
         match_trans = df_trans[df_trans['ticker'] == t]
         if not match_trans.empty:
-            # Pega o preço da última linha (mais recente)
             ultimo_preco_str = str(match_trans.iloc[-1]['price']).replace('.', '').replace(',', '.')
             precos_finais[t] = float(ultimo_preco_str)
-        else:
-            precos_finais[t] = 1.0
+        else: precos_finais[t] = 1.0
 
     # Gravação Final
     ws_market = sh.worksheet("market_data")
     ws_market.clear()
-    
     final_rows = []
-    # Usamos o df_assets como base de ordem para evitar deslocamentos
-    for t in df_assets['ticker'].unique():
+    # Inclui o USDBRL=X na lista final para o app ler
+    all_tickers = list(df_assets['ticker'].unique())
+    if 'USDBRL=X' in precos_finais: all_tickers.append('USDBRL=X')
+    
+    for t in all_tickers:
         t_str = str(t).strip()
         if t_str == "": continue
         preco = precos_finais.get(t_str, 1.0)
         final_rows.append([t_str, float(preco), agora])
     
     ws_market.update(values=[['ticker', 'close_price', 'last_update']] + final_rows, range_name='A1')
-    print(f"🚀 Concluído! {len(final_rows)} ativos atualizados.")
+    print(f"🚀 Atualizado em {agora}")
 
 if __name__ == "__main__":
     update_all_market_data()
