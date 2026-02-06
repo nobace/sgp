@@ -37,19 +37,26 @@ def update_all_market_data():
     df_assets.columns = [c.lower().strip() for c in df_assets.columns]
     
     ws_market = sh.worksheet("market_data")
-    dados_market_atuais = ws_market.get_all_records()
-
-    # Função para limpar valores da planilha (converte BR para padrão Python)
+    # Lemos os dados brutos da market_data para preservar o que você digitou
+    dados_market_atuais = ws_market.get_all_values()
+    headers_m = dados_market_atuais[0]
+    
+    # Função para limpar valores que você digita (trata vírgula BR)
     def clean_manual_val(val):
-        if val is None or val == "": return 1.0
+        if val is None or val == "" or val == "close_price": return 1.0
         s = str(val).strip()
         if "," in s:
             s = s.replace(".", "").replace(",", ".")
         try: return float(s)
         except: return 1.0
 
-    # Dicionário de preservação (lê o que você escreveu na market_data)
-    precos_preservados = {str(d['ticker']).strip(): clean_manual_val(d['close_price']) for d in dados_market_atuais}
+    # Dicionário de preservação: mapeia ticker -> preço atual na planilha
+    precos_preservados = {}
+    if len(dados_market_atuais) > 1:
+        for row in dados_market_atuais[1:]:
+            ticker_m = str(row[0]).strip()
+            preco_m = clean_manual_val(row[1])
+            precos_preservados[ticker_m] = preco_m
 
     precos_finais = {}
     agora = datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')
@@ -89,7 +96,7 @@ def update_all_market_data():
                     break
             except: continue
 
-    # --- PARTE FINAL: MONTAGEM DO OUTPUT (FORÇANDO PADRÃO BR) ---
+    # --- PARTE FINAL: MONTAGEM DO OUTPUT ---
     output = []
     tickers_bloqueados = ['FGTS_SALDO', 'PREV_ITAU_ULTRA']
 
@@ -98,27 +105,26 @@ def update_all_market_data():
         if not t_str: continue
         
         if t_str in tickers_bloqueados:
-            valor_num = precos_preservados.get(t_str, 1.0)
-            print(f"🔒 Bloqueado: Mantendo valor manual para {t_str}: {valor_num}")
+            # Pega o valor que estava na planilha e garante que é FLOAT
+            valor_final = precos_preservados.get(t_str, 1.0)
+            print(f"🔒 Bloqueado: Mantendo {t_str} = {valor_final}")
         else:
-            valor_num = precos_finais.get(t_str, 1.0)
+            valor_final = precos_finais.get(t_str, 1.0)
             
-        # O TRUQUE: Envia como texto com vírgula para o Sheets BR reconhecer o decimal
-        valor_br = f"{float(valor_num):.2f}".replace('.', ',')
-        output.append([t_str, valor_br, agora])
+        output.append([t_str, float(valor_final), agora])
 
     if 'USDBRL=X' in precos_finais:
-        dolar_br = f"{float(precos_finais['USDBRL=X']):.4f}".replace('.', ',')
-        output.append(['USDBRL=X', dolar_br, agora])
+        output.append(['USDBRL=X', float(precos_finais['USDBRL=X']), agora])
 
-    # GRAVAÇÃO DEFINITIVA
+    # GRAVAÇÃO COM VALOR BRUTO (RAW)
+    # Isso evita que o Sheets tente "traduzir" o ponto do Python para milhar
     ws_market.clear()
     ws_market.update(
         values=[['ticker', 'close_price', 'last_update']] + output, 
         range_name='A1',
-        value_input_option='USER_ENTERED'
+        value_input_option='RAW' 
     )
-    print(f"✅ Atualização concluída com sucesso.")
+    print(f"✅ Atualização concluída com sucesso!")
 
 if __name__ == "__main__":
     update_all_market_data()
