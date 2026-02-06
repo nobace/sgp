@@ -1,90 +1,81 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import yfinance as yf
+import gspread
+from google.oauth2.service_account import Credentials
+import os
+import json
 
-# 1. Configuração da Página
-st.set_page_config(page_title="SGP - Monitor Patrimonial", layout="wide")
+def load_data():
+    info = json.loads(os.environ['GOOGLE_SHEETS_CREDS'])
+    creds = Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/spreadsheets'])
+    client = gspread.authorize(creds)
+    sh = client.open_by_key("1agsg85drPHHQQHPgUdBKiNQ9_riqV3ZvNxbaZ3upSx8")
+    
+    # Carregar abas
+    assets = pd.DataFrame(sh.worksheet("assets").get_all_records())
+    trans = pd.DataFrame(sh.worksheet("transactions").get_all_records())
+    market = pd.DataFrame(sh.worksheet("market_data").get_all_records())
+    
+    return assets, trans, market
 
-ID_PLANILHA = "1agsg85drPHHQQHPgUdBKiNQ9_riqV3ZvNxbaZ3upSx8"
-
-@st.cache_data(ttl=600)
-def load_all_data(id_planilha):
-    def load_sheet(sheet_name):
-        url = f"https://docs.google.com/spreadsheets/d/{id_planilha}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
-        return pd.read_csv(url)
-
-    return load_sheet("assets"), load_sheet("transactions"), load_sheet("market_data")
-
-def get_positions(df_assets, df_trans, df_market):
-    # Função de limpeza ultra-agressiva
-    def clean_num(value):
-        try:
-            if pd.isna(value) or str(value).strip() == "": return 0.0
-            # Remove tudo que não é número, vírgula ou ponto
-            s = str(value).replace('R$', '').replace(' ', '').strip()
-            # Se tiver ponto e vírgula (ex 1.234,56), remove o ponto
-            if '.' in s and ',' in s: s = s.replace('.', '')
-            # Troca vírgula por ponto
-            s = s.replace(',', '.')
-            return float(s)
-        except:
-            return 0.0
-
-    # Forçar nomes de colunas para minúsculo para evitar erro de digitação
-    df_trans.columns = [c.lower() for c in df_trans.columns]
-    df_market.columns = [c.lower() for c in df_market.columns]
-    df_assets.columns = [c.lower() for c in df_assets.columns]
-
-    # Aplicar limpeza
-    df_trans['quantity'] = df_trans['quantity'].apply(clean_num)
-    df_market['close_price'] = df_market['close_price'].apply(clean_num)
-
-    # Agrupar
-    pos = df_trans.groupby(['ticker', 'institution'])['quantity'].sum().reset_index()
-    pos = pos.merge(df_assets, on='ticker', how='left')
-    pos = pos.merge(df_market[['ticker', 'close_price']], on='ticker', how='left')
+def main():
+    st.set_page_config(page_title="Meu Dashboard de Investimentos", layout="wide")
+    st.title("🚀 Gestão de Patrimônio")
     
     try:
-        usd_quote = yf.Ticker("BRL=X").history(period="1d")['Close'].iloc[-1]
-    except:
-        usd_quote = 5.85
-    
-    def calc_brl(row):
-        qtd = float(row['quantity'])
-        preco = float(row['close_price'])
-        # Se o ticker for em dólar ou a moeda for USD
-        if str(row.get('currency', '')).upper() == 'USD':
-            return qtd * preco * usd_quote
-        return qtd * preco
+        df_assets, df_trans, df_market = load_data()
+        
+        # 1. Processamento de Dados
+        # Agrupar transações por ticker
+        resumo = df_trans.groupby('ticker').agg({'quantity': 'sum', 'cost': 'sum'}).reset_index()
+        
+        # Merge com preços atuais e nomes
+        resumo = resumo.merge(df_market, on='ticker', how='left')
+        resumo = resumo.merge(df_assets[['ticker', 'name', 'type']], on='ticker', how='left')
+        
+        # Cálculos
+        resumo['Saldo Atual'] = resumo['quantity'] * resumo['close_price'].astype(float)
+        resumo['Lucro'] = resumo['Saldo Atual'] - resumo['cost']
+        resumo['Rentabilidade'] = (resumo['Lucro'] / resumo['cost']) * 100
+        
+        # 2. Layout do Dashboard
+        m1, m2, m3 = st.columns(3)
+        total_atual = resumo['Saldo Atual'].sum()
+        total_investido = resumo['cost'].sum()
+        total_lucro = total_atual - total_investido
+        
+        m1.metric("Patrimônio Total", f"R$ {total_atual:,.2f}")
+        m2.metric("Total Investido", f"R$ {total_investido:,.2f}")
+        m3.metric("Lucro Total", f"R$ {total_lucro:,.2f}", f"{(total_lucro/total_investido)*100:.2f}%")
 
-    pos['valor_brl'] = pos.apply(calc_brl, axis=1)
-    return pos, usd_quote
+        st.divider()
+        
+        # 3. Tabela Consolidada
+        st.subheader("📊 Performance por Ativo")
+        if not df_market.empty:
+            st.caption(f"🕒 Preços atualizados em: {df_market['last_update'].iloc[0]}")
+            
+        df_exibir = resumo[['name', 'type', 'quantity', 'cost', 'Saldo Atual', 'Lucro', 'Rentabilidade']]
+        df_exibir.columns = ['Nome', 'Tipo', 'Qtd', 'Custo Total', 'Saldo Atual', 'Lucro (R$)', 'Retorno (%)']
+        
+        st.dataframe(
+            df_exibir.style.format({
+                'Custo Total': 'R$ {:,.2f}',
+                'Saldo Atual': 'R$ {:,.2f}',
+                'Lucro (R$)': 'R$ {:,.2f}',
+                'Retorno (%)': '{:.2f}%'
+            }).map(lambda v: 'color: red' if v < 0 else 'color: green', subset=['Lucro (R$)', 'Retorno (%)']),
+            use_container_width=True, hide_index=True
+        )
+        
+        # 4. Gráfico de Alocação
+        st.subheader("🏗️ Alocação por Classe")
+        setores = resumo.groupby('type')['Saldo Atual'].sum()
+        st.pydeck_chart # (Opcional: substituir por st.plotly_chart se quiser gráfico de pizza)
+        st.bar_chart(setores)
 
-# --- EXECUÇÃO ---
-df_assets, df_trans, df_market = load_all_data(ID_PLANILHA)
+    except Exception as e:
+        st.error(f"Erro ao carregar dashboard: {e}")
 
-# DEBUG: Mostra se os dados chegaram (apenas para você ver)
-if st.checkbox("Ver dados brutos da planilha"):
-    st.write("Transações:", df_trans.head())
-    st.write("Preços:", df_market.head())
-
-df_pos, dolar = get_positions(df_assets, df_trans, df_market)
-
-total_brl = df_pos['valor_brl'].sum()
-dolarizados = df_pos[df_pos['currency'] == 'USD']['valor_brl'].sum()
-idx_dolar = (dolarizados / total_brl * 100) if total_brl > 0 else 0.0
-
-# --- INTERFACE ---
-st.title("📊 Gestão de Patrimônio Unificada")
-
-c1, c2, c3 = st.columns(3)
-c1.metric("Patrimônio Total", f"R$ {total_brl:,.2f}")
-c2.metric("Índice de Dolarização", f"{idx_dolar:.2f}%")
-c3.metric("Dólar (Yahoo)", f"R$ {dolar:.2f}")
-
-if total_brl == 0:
-    st.error("⚠️ O patrimônio está zerado. Verifique se as colunas 'quantity' (na aba transactions) e 'close_price' (na aba market_data) contêm números.")
-
-st.divider()
-st.dataframe(df_pos)
+if __name__ == "__main__":
+    main()
