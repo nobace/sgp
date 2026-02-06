@@ -6,6 +6,23 @@ import os
 import json
 import datetime
 import numpy as np
+import requests  # CORREÇÃO: Necessário importar requests
+
+def get_tesouro_url():
+    """Consulta a API do Tesouro para encontrar o link atualizado do CSV"""
+    api_url = "https://www.tesourotransparente.gov.br/ckan/api/3/action/package_show?id=taxas-do-tesouro-direto"
+    try:
+        response = requests.get(api_url, timeout=30)
+        data = response.json()
+        resources = data['result']['resources']
+        for res in resources:
+            # Busca o arquivo CSV de Preços e Taxas
+            if "Preco" in res['name'] and "Taxa" in res['name'] and res['format'].lower() == "csv":
+                return res['url']
+    except Exception as e:
+        print(f"⚠️ Erro ao consultar API do Tesouro: {e}")
+    # Link de fallback atualizado
+    return "https://www.tesourotransparente.gov.br/ckan/dataset/df56aa42-484a-4a59-8184-7676580c81e3/resource/796d2059-14e9-44e3-80c9-2d9e30b405c1/download/precotaxatesourodireto.csv"
 
 def update_all_market_data():
     ID_PLANILHA = "1agsg85drPHHQQHPgUdBKiNQ9_riqV3ZvNxbaZ3upSx8"
@@ -70,49 +87,26 @@ def update_all_market_data():
                 break
             except: continue
 
-    # --- PARTE D: TESOURO DIRETO (Ajustado para o arquivo real) ---
-    def get_tesouro_url():
-    """Consulta a API do Tesouro para encontrar o link atualizado do CSV"""
-    api_url = "https://www.tesourotransparente.gov.br/ckan/api/3/action/package_show?id=taxas-do-tesouro-direto"
-    try:
-        response = requests.get(api_url, timeout=30)
-        data = response.json()
-        resources = data['result']['resources']
-        # Procura o recurso que contém 'Preço' e 'Taxa' no nome e é um CSV
-        for res in resources:
-            if "Preco" in res['name'] and "Taxa" in res['name'] and res['format'].lower() == "csv":
-                return res['url']
-    except Exception as e:
-        print(f"⚠️ Erro ao consultar API do Tesouro: {e}")
-    # Fallback para o link que você validou caso a API falhe
-    return "https://www.tesourotransparente.gov.br/ckan/dataset/df56aa42-484a-4a59-8184-7676580c81e3/resource/796d2059-14e9-44e3-80c9-2d9e30b405c1/download/precotaxatesourodireto.csv"
-    
+    # --- PARTE D: TESOURO DIRETO ---
     df_td_assets = df_assets[df_assets['type'] == 'TESOURO']
     if not df_td_assets.empty:
-        url_td = get_tesouro_url()
+        url_td = get_tesouro_url() # CORREÇÃO: Chamada da função agora funciona
         print(f"🔍 Buscando Tesouro Direto...")
         try:
-            # Lendo o CSV com as configurações do arquivo real
             df_td = pd.read_csv(url_td, sep=';', decimal=',', encoding='latin1')
             df_td['Data Vencimento'] = pd.to_datetime(df_td['Data Vencimento'], dayfirst=True)
             df_td['Data Base'] = pd.to_datetime(df_td['Data Base'], dayfirst=True)
-            
-            # Filtra apenas os preços mais recentes (Data Base mais alta)
             df_hoje = df_td[df_td['Data Base'] == df_td['Data Base'].max()]
 
             for _, row in df_td_assets.iterrows():
                 ticker = str(row['ticker']).upper()
-                
-                # 1. Identifica o Ano (ex: 29 -> 2029)
                 digitos = ''.join(filter(str.isdigit, ticker))
                 ano_venc = 2000 + int(digitos) if digitos else None
                 
-                # 2. Identifica o Tipo
                 tipo_busca = "IPCA+"
                 if "SELIC" in ticker: tipo_busca = "Selic"
                 elif "PREFIX" in ticker: tipo_busca = "Prefixado"
                 
-                # 3. Filtro refinado
                 mask = (df_hoje['Tipo Titulo'].str.contains(tipo_busca, case=False, na=False))
                 if "JUROS" in ticker:
                     mask = mask & (df_hoje['Tipo Titulo'].str.contains("Juros", case=False, na=False))
@@ -123,13 +117,10 @@ def update_all_market_data():
                     mask = mask & (df_hoje['Data Vencimento'].dt.year == ano_venc)
                 
                 match = df_hoje[mask]
-                
                 if not match.empty:
-                    # Usando a coluna 'PU Base Manha' que confirmamos no seu arquivo
                     preco = float(match.iloc[0]['PU Base Manha'])
                     precos_finais[row['ticker']] = preco
                     print(f"✅ {row['ticker']} atualizado: R$ {preco:.2f}")
-                    
         except Exception as e:
             print(f"⚠️ Erro ao processar Tesouro: {e}")
 
