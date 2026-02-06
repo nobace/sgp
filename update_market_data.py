@@ -39,16 +39,14 @@ def update_all_market_data():
     ws_market = sh.worksheet("market_data")
     dados_market_atuais = ws_market.get_all_records()
 
-    # Função para limpar valores que já estão na planilha (respeita vírgula/ponto)
+    # Função para limpar valores da planilha lidando com a vírgula brasileira
     def clean_manual_val(val):
         if val is None or val == "": return 1.0
-        s = str(val).replace('.', '').replace(',', '.')
-        try:
-            return float(s)
-        except:
-            return 1.0
+        s = str(val).strip().replace('.', '').replace(',', '.')
+        try: return float(s)
+        except: return 1.0
 
-    # Dicionário com os preços que já estão lá (Preservação)
+    # Dicionário de preservação
     precos_preservados = {str(d['ticker']).strip(): clean_manual_val(d['close_price']) for d in dados_market_atuais}
 
     precos_finais = {}
@@ -104,9 +102,8 @@ def update_all_market_data():
                 if not df_hoje[mask].empty: precos_finais[ticker] = float(df_hoje[mask].iloc[0]['PU Base Manha'])
         except: pass
 
-    # --- PARTE FINAL: MONTAGEM DO OUTPUT COM TRAVA ---
+    # --- PARTE FINAL: MONTAGEM DO OUTPUT (TEXTO COM VÍRGULA) ---
     output = []
-    # Ativos que o robô não deve atualizar (Usa o que já está na market_data)
     tickers_bloqueados = ['FGTS_SALDO', 'PREV_ITAU_ULTRA']
 
     for t in df_assets['ticker'].unique():
@@ -114,25 +111,27 @@ def update_all_market_data():
         if not t_str: continue
         
         if t_str in tickers_bloqueados:
-            valor_final = precos_preservados.get(t_str, 1.0)
-            print(f"🔒 Bloqueado: Mantendo valor manual para {t_str}: {valor_final}")
+            valor_num = precos_preservados.get(t_str, 1.0)
+            print(f"🔒 Mantendo manual: {t_str} = {valor_num}")
         else:
-            valor_final = precos_finais.get(t_str, 1.0)
+            valor_num = precos_finais.get(t_str, 1.0)
             
-        output.append([t_str, float(valor_final), agora])
+        # Converte para string com vírgula para "travar" a formatação no Sheets
+        valor_br = f"{float(valor_num):.2f}".replace('.', ',')
+        output.append([t_str, valor_br, agora])
 
-    # Adicionar o Dólar sempre atualizado
+    # Adicionar Dólar
     if 'USDBRL=X' in precos_finais:
-        output.append(['USDBRL=X', precos_finais['USDBRL=X'], agora])
+        dolar_br = f"{float(precos_finais['USDBRL=X']):.4f}".replace('.', ',')
+        output.append(['USDBRL=X', dolar_br, agora])
 
-    # Gravação com parâmetro que preserva o formato numérico do usuário
     ws_market.clear()
     ws_market.update(
         values=[['ticker', 'close_price', 'last_update']] + output, 
         range_name='A1',
-        value_input_option='USER_ENTERED' 
+        value_input_option='USER_ENTERED'
     )
-    print(f"✅ Processo concluído. Planilha atualizada!")
+    print(f"✅ Atualização concluída com sucesso!")
 
 if __name__ == "__main__":
     update_all_market_data()
