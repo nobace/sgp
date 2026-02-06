@@ -1,0 +1,21 @@
+name: Atualização de Preços SGP
+on:
+  schedule:
+    - cron: '0 22 * * 1-5' # Roda às 22h UTC (após fecho do mercado) de Seg a Sex
+  workflow_dispatch: # Permite que você clique num botão para rodar agora
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install Libs
+        run: pip install yfinance gspread google-auth pandas
+      - name: Execute Script
+        env:
+          GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
+        run: python update_prices.py
