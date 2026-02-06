@@ -54,8 +54,14 @@ def get_positions(df_assets, df_trans, df_market):
     pos = pos.merge(df_assets, on='ticker', how='left')
     pos = pos.merge(df_market[['ticker', 'close_price']], on='ticker', how='left')
     
-    # Câmbio
-    usd_quote = yf.Ticker("BRL=X").fast_info['last_price']
+    # Câmbio com TRATAMENTO DE ERRO (Try/Except)
+    try:
+        usd_quote = yf.Ticker("BRL=X").fast_info['last_price']
+        if usd_quote is None or usd_quote == 0:
+            raise ValueError("Preço inválido")
+    except Exception as e:
+        st.warning("⚠️ Yahoo Finance limitado. Usando cotação de segurança (R$ 5,85).")
+        usd_quote = 5.85 # Valor de fallback para o app não travar
     
     pos['valor_brl'] = pos.apply(
         lambda x: (x['quantity'] * x['close_price'] * usd_quote) if x['currency'] == 'USD' 
@@ -98,6 +104,7 @@ with t2:
 with t3:
 
     st.dataframe(df_pos[['ticker', 'institution', 'type', 'quantity', 'valor_brl']].style.format({'valor_brl': 'R$ {:,.2f}'}), use_container_width=True)
+
 
 
 
