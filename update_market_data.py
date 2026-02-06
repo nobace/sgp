@@ -39,17 +39,14 @@ def update_all_market_data():
     ws_market = sh.worksheet("market_data")
     dados_market_atuais = ws_market.get_all_records()
 
-    # Função de limpeza robusta para preservar o valor manual digitado por você
+    # Função para limpar valores da planilha (converte BR para padrão Python)
     def clean_manual_val(val):
         if val is None or val == "": return 1.0
         s = str(val).strip()
-        # Se houver vírgula, limpamos pontos de milhar e trocamos vírgula por ponto decimal
         if "," in s:
             s = s.replace(".", "").replace(",", ".")
-        try:
-            return float(s)
-        except:
-            return 1.0
+        try: return float(s)
+        except: return 1.0
 
     # Dicionário de preservação (lê o que você escreveu na market_data)
     precos_preservados = {str(d['ticker']).strip(): clean_manual_val(d['close_price']) for d in dados_market_atuais}
@@ -92,12 +89,8 @@ def update_all_market_data():
                     break
             except: continue
 
-    # --- PARTE C: TESOURO ---
-    # (Mantido conforme versões anteriores)
-    
-    # --- PARTE FINAL: MONTAGEM DO OUTPUT ---
+    # --- PARTE FINAL: MONTAGEM DO OUTPUT (FORÇANDO PADRÃO BR) ---
     output = []
-    # Tickers que o robô APENAS REPETE o que já está na market_data
     tickers_bloqueados = ['FGTS_SALDO', 'PREV_ITAU_ULTRA']
 
     for t in df_assets['ticker'].unique():
@@ -105,27 +98,27 @@ def update_all_market_data():
         if not t_str: continue
         
         if t_str in tickers_bloqueados:
-            # Pega exatamente o valor decimal que estava na planilha
-            valor_final = precos_preservados.get(t_str, 1.0)
-            print(f"🔒 Bloqueado: Mantendo valor manual para {t_str}: {valor_final}")
+            valor_num = precos_preservados.get(t_str, 1.0)
+            print(f"🔒 Bloqueado: Mantendo valor manual para {t_str}: {valor_num}")
         else:
-            valor_final = precos_finais.get(t_str, 1.0)
+            valor_num = precos_finais.get(t_str, 1.0)
             
-        # Enviamos como FLOAT PURO para o Google Sheets
-        output.append([t_str, float(valor_final), agora])
+        # O TRUQUE: Envia como texto com vírgula para o Sheets BR reconhecer o decimal
+        valor_br = f"{float(valor_num):.2f}".replace('.', ',')
+        output.append([t_str, valor_br, agora])
 
     if 'USDBRL=X' in precos_finais:
-        output.append(['USDBRL=X', float(precos_finais['USDBRL=X']), agora])
+        dolar_br = f"{float(precos_finais['USDBRL=X']):.4f}".replace('.', ',')
+        output.append(['USDBRL=X', dolar_br, agora])
 
     # GRAVAÇÃO DEFINITIVA
     ws_market.clear()
-    # Usar 'RAW' impede que o Sheets tente interpretar o ponto como milhar
     ws_market.update(
         values=[['ticker', 'close_price', 'last_update']] + output, 
         range_name='A1',
-        value_input_option='RAW'
+        value_input_option='USER_ENTERED'
     )
-    print(f"✅ Atualização concluída.")
+    print(f"✅ Atualização concluída com sucesso.")
 
 if __name__ == "__main__":
     update_all_market_data()
