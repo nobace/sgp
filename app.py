@@ -1,81 +1,68 @@
-import streamlit as st
+import yfinance as yf
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 import os
 import json
+import datetime
+import numpy as np
+import requests
 
-def load_data():
-    info = json.loads(os.environ['GOOGLE_SHEETS_CREDS'])
-    creds = Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/spreadsheets'])
-    client = gspread.authorize(creds)
-    sh = client.open_by_key("1agsg85drPHHQQHPgUdBKiNQ9_riqV3ZvNxbaZ3upSx8")
-    
-    # Carregar abas
-    assets = pd.DataFrame(sh.worksheet("assets").get_all_records())
-    trans = pd.DataFrame(sh.worksheet("transactions").get_all_records())
-    market = pd.DataFrame(sh.worksheet("market_data").get_all_records())
-    
-    return assets, trans, market
+def get_tesouro_url():
+    """Consulta a API do Tesouro para encontrar o link atualizado do CSV"""
+    api_url = "https://www.tesourotransparente.gov.br/ckan/api/3/action/package_show?id=taxas-do-tesouro-direto"
+    try:
+        response = requests.get(api_url, timeout=30)
+        data = response.json()
+        resources = data['result']['resources']
+        for res in resources:
+            if "Preco" in res['name'] and "Taxa" in res['name'] and res['format'].lower() == "csv":
+                return res['url']
+    except Exception as e:
+        print(f"⚠️ Erro API Tesouro: {e}")
+    return "https://www.tesourotransparente.gov.br/ckan/dataset/df56aa42-484a-4a59-8184-7676580c81e3/resource/796d2059-14e9-44e3-80c9-2d9e30b405c1/download/precotaxatesourodireto.csv"
 
-def main():
-    st.set_page_config(page_title="Meu Dashboard de Investimentos", layout="wide")
-    st.title("🚀 Gestão de Patrimônio")
+def update_all_market_data():
+    ID_PLANILHA = "1agsg85drPHHQQHPgUdBKiNQ9_riqV3ZvNxbaZ3upSx8"
     
     try:
-        df_assets, df_trans, df_market = load_data()
-        
-        # 1. Processamento de Dados
-        # Agrupar transações por ticker
-        resumo = df_trans.groupby('ticker').agg({'quantity': 'sum', 'cost': 'sum'}).reset_index()
-        
-        # Merge com preços atuais e nomes
-        resumo = resumo.merge(df_market, on='ticker', how='left')
-        resumo = resumo.merge(df_assets[['ticker', 'name', 'type']], on='ticker', how='left')
-        
-        # Cálculos
-        resumo['Saldo Atual'] = resumo['quantity'] * resumo['close_price'].astype(float)
-        resumo['Lucro'] = resumo['Saldo Atual'] - resumo['cost']
-        resumo['Rentabilidade'] = (resumo['Lucro'] / resumo['cost']) * 100
-        
-        # 2. Layout do Dashboard
-        m1, m2, m3 = st.columns(3)
-        total_atual = resumo['Saldo Atual'].sum()
-        total_investido = resumo['cost'].sum()
-        total_lucro = total_atual - total_investido
-        
-        m1.metric("Patrimônio Total", f"R$ {total_atual:,.2f}")
-        m2.metric("Total Investido", f"R$ {total_investido:,.2f}")
-        m3.metric("Lucro Total", f"R$ {total_lucro:,.2f}", f"{(total_lucro/total_investido)*100:.2f}%")
-
-        st.divider()
-        
-        # 3. Tabela Consolidada
-        st.subheader("📊 Performance por Ativo")
-        if not df_market.empty:
-            st.caption(f"🕒 Preços atualizados em: {df_market['last_update'].iloc[0]}")
-            
-        df_exibir = resumo[['name', 'type', 'quantity', 'cost', 'Saldo Atual', 'Lucro', 'Rentabilidade']]
-        df_exibir.columns = ['Nome', 'Tipo', 'Qtd', 'Custo Total', 'Saldo Atual', 'Lucro (R$)', 'Retorno (%)']
-        
-        st.dataframe(
-            df_exibir.style.format({
-                'Custo Total': 'R$ {:,.2f}',
-                'Saldo Atual': 'R$ {:,.2f}',
-                'Lucro (R$)': 'R$ {:,.2f}',
-                'Retorno (%)': '{:.2f}%'
-            }).map(lambda v: 'color: red' if v < 0 else 'color: green', subset=['Lucro (R$)', 'Retorno (%)']),
-            use_container_width=True, hide_index=True
-        )
-        
-        # 4. Gráfico de Alocação
-        st.subheader("🏗️ Alocação por Classe")
-        setores = resumo.groupby('type')['Saldo Atual'].sum()
-        st.pydeck_chart # (Opcional: substituir por st.plotly_chart se quiser gráfico de pizza)
-        st.bar_chart(setores)
-
+        info = json.loads(os.environ['GOOGLE_SHEETS_CREDS'])
+        creds = Credentials.from_service_account_info(info, scopes=[
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ])
+        client = gspread.authorize(creds)
+        sh = client.open_by_key(ID_PLANILHA)
     except Exception as e:
-        st.error(f"Erro ao carregar dashboard: {e}")
+        print(f"❌ Erro Autenticação: {e}")
+        return
 
-if __name__ == "__main__":
-    main()
+    ws_assets = sh.worksheet("assets")
+    df_assets = pd.DataFrame(ws_assets.get_all_records())
+    df_assets.columns = [c.lower().strip() for c in df_assets.columns]
+
+    precos_finais = {}
+    agora = datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+
+    # --- PARTE A: YAHOO FINANCE ---
+    tipos_yahoo = ['ACAO_BR', 'FII', 'BDR', 'ETF_BR', 'ETF_US']
+    tickers_yahoo = df_assets[df_assets['type'].isin(tipos_yahoo)]['ticker'].tolist()
+    if tickers_yahoo:
+        try:
+            data_yf = yf.download(tickers_yahoo, period="1d", group_by='ticker', progress=False)
+            for t in tickers_yahoo:
+                try:
+                    val = data_yf[t]['Close'].iloc[-1] if len(tickers_yahoo) > 1 else data_yf['Close'].iloc[-1]
+                    if pd.notnull(val): precos_finais[t] = float(val)
+                except: precos_finais[t] = 0.0
+        except: pass
+
+    # --- PARTE B: CVM (Fundos) ---
+    df_fundos = df_assets[df_assets['type'] == 'FUNDO']
+    mapa_cnpjs = {str(r['isin_cnpj']).replace('.','').replace('-','').replace('/','').zfill(14): r['ticker'] 
+                  for _, r in df_fundos.iterrows() if r.get('isin_cnpj')}
+    if mapa_cnpjs:
+        hoje = datetime.date.today()
+        for i in range(3):
+            mes = (hoje - datetime.timedelta(days=i*28)).strftime('%Y%m')
+            url = f"
