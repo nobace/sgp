@@ -6,38 +6,28 @@ import os
 import json
 import numpy as np
 
-def fix_br_numbers(series):
+def clean_financial_v2(value):
     """
-    Limpa strings financeiras brasileiras.
-    Exemplo: '1.957,00' -> 1957.0 | '580,00' -> 580.0
+    Remove pontos de milhar e converte vírgula decimal para ponto.
+    Ex: '1.957,00' -> '1957.00' -> 1957.0
     """
-    def clean(val):
-        if val is None or val == "":
-            return 0.0
-        
-        # Converte para string e remove espaços
-        s = str(val).strip()
-        
-        # Se for "0" ou "-", retorna zero
-        if s in ["0", "-", "0,00", "0.00"]:
-            return 0.0
-
-        # Lógica de limpeza:
-        # 1. Se tem ponto e vírgula (ex: 1.957,00), remove o ponto e troca a vírgula por ponto
-        if "." in s and "," in s:
-            s = s.replace(".", "").replace(",", ".")
-        # 2. Se tem apenas vírgula (ex: 580,00), troca por ponto
-        elif "," in s:
-            s = s.replace(",", ".")
-        # 3. Se o ponto aparece mas parece ser de milhar (ex: 1.957) 
-        # Esta parte é sensível, vamos tratar via pandas to_numeric no final
-        
-        try:
-            return float(s)
-        except:
-            return 0.0
-            
-    return pd.to_numeric(series.apply(clean), errors='coerce').fillna(0.0)
+    if value is None or value == "":
+        return 0.0
+    
+    # Transforma em string e remove espaços
+    s = str(value).strip()
+    
+    # Se o número vier no formato 1.957,00
+    if "." in s and "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    # Se vier apenas com vírgula (580,00)
+    elif "," in s:
+        s = s.replace(",", ".")
+    
+    try:
+        return float(s)
+    except:
+        return 0.0
 
 def load_data():
     creds_json = json.loads(st.secrets["GOOGLE_SHEETS_CREDS"])
@@ -45,10 +35,10 @@ def load_data():
     client = gspread.authorize(creds)
     sh = client.open_by_key("1agsg85drPHHQQHPgUdBKiNQ9_riqV3ZvNxbaZ3upSx8")
     
-    # Carregando abas como DataFrames brutos (sem converter números ainda)
-    assets = pd.DataFrame(sh.worksheet("assets").get_all_records())
-    trans = pd.DataFrame(sh.worksheet("transactions").get_all_records())
-    market = pd.DataFrame(sh.worksheet("market_data").get_all_records())
+    # Forçamos a leitura como string para o Pandas não tentar 'adivinhar' e errar
+    assets = pd.DataFrame(sh.worksheet("assets").get_all_records(numericise_ignore=['all']))
+    trans = pd.DataFrame(sh.worksheet("transactions").get_all_records(numericise_ignore=['all']))
+    market = pd.DataFrame(sh.worksheet("market_data").get_all_records(numericise_ignore=['all']))
     
     return assets, trans, market
 
@@ -64,58 +54,59 @@ def main():
         df_assets.columns = [c.lower().strip() for c in df_assets.columns]
         df_market.columns = [c.lower().strip() for c in df_market.columns]
 
-        # 1. Tratamento de Números Brasileiro (Vírgulas e Pontos)
-        for col in ['quantity', 'price', 'costs', 'exchange_rate']:
+        # 1. Aplica limpeza pesada nas colunas numéricas
+        cols_financeiras = ['quantity', 'price', 'costs', 'exchange_rate']
+        for col in cols_financeiras:
             if col in df_trans.columns:
-                df_trans[col] = fix_br_numbers(df_trans[col])
+                df_trans[col] = df_trans[col].apply(clean_financial_v2)
         
         if 'close_price' in df_market.columns:
-            df_market['close_price'] = fix_br_numbers(df_market['close_price'])
+            df_market['close_price'] = df_market['close_price'].apply(clean_financial_v2)
 
-        # 2. Lógica de Custo Inteligente (Se costs=0, calcula Qtd * Preço * Câmbio)
-        df_trans['investimento_real'] = df_trans['costs']
-        # Identifica linhas onde o custo está zerado mas temos preço e quantidade
-        mask_zero_cost = (df_trans['investimento_real'] == 0) & (df_trans['price'] > 0)
-        df_trans.loc[mask_zero_cost, 'investimento_real'] = (
-            df_trans['quantity'] * df_trans['price'] * df_trans['exchange_rate'].replace(0, 1)
+        # 2. Lógica de Custo de Aquisição (Custo Médio / Investimento Inicial)
+        # Se 'costs' estiver zerado (como vimos na sua amostra), usamos Qtd * Preço * Câmbio
+        df_trans['investimento_real'] = df_trans.apply(
+            lambda r: r['costs'] if r['costs'] > 0 
+            else (r['quantity'] * r['price'] * (r['exchange_rate'] if r['exchange_rate'] > 0 else 1.0)),
+            axis=1
         )
 
-        # 3. Consolidação por Ticker
+        # 3. Consolidação por Ativo
         resumo = df_trans.groupby('ticker').agg({
             'quantity': 'sum', 
             'investimento_real': 'sum'
         }).reset_index()
         
-        # Merge com Market Data e Assets
-        resumo = resumo.merge(df_market, on='ticker', how='left')
+        # Merge com Preços de Mercado e Informações de Ativos
+        resumo = resumo.merge(df_market[['ticker', 'close_price', 'last_update']], on='ticker', how='left')
         resumo = resumo.merge(df_assets[['ticker', 'name', 'type']], on='ticker', how='left')
         
-        # Cálculos de Performance
+        # 4. Cálculos de Performance
         resumo['Saldo Atual'] = resumo['quantity'] * resumo['close_price'].fillna(0)
         resumo['Lucro'] = resumo['Saldo Atual'] - resumo['investimento_real']
         resumo['Rentabilidade'] = np.where(
-            resumo['investimento_real'] != 0, 
+            resumo['investimento_real'] > 0.01, # Evita divisão por zero
             (resumo['Lucro'] / resumo['investimento_real']) * 100, 
             0
         )
         
-        # 4. Métricas de Cabeçalho
+        # 5. Métricas de Resumo
+        m1, m2, m3 = st.columns(3)
         total_atual = resumo['Saldo Atual'].sum()
         total_investido = resumo['investimento_real'].sum()
         total_lucro = total_atual - total_investido
-        retorno_global = (total_lucro / total_investido * 100) if total_investido != 0 else 0
+        retorno_global = (total_lucro / total_investido * 100) if total_investido > 0 else 0
         
-        m1, m2, m3 = st.columns(3)
         m1.metric("Patrimônio Total", f"R$ {total_atual:,.2f}")
         m2.metric("Total Investido", f"R$ {total_investido:,.2f}")
         m3.metric("Lucro Total", f"R$ {total_lucro:,.2f}", f"{retorno_global:.2f}%")
 
         st.divider()
         
-        # 5. Tabela Consolidada
+        # 6. Exibição da Tabela Consolidada
         st.subheader("📊 Performance por Ativo")
         if not df_market.empty and 'last_update' in df_market.columns:
-            st.caption(f"🕒 Preços atualizados em: {df_market['last_update'].iloc[0]}")
+            st.caption(f"🕒 Dados de mercado atualizados em: {df_market['last_update'].iloc[0]}")
             
         view = resumo[['name', 'type', 'quantity', 'investimento_real', 'Saldo Atual', 'Lucro', 'Rentabilidade']].copy()
         view.columns = ['Nome', 'Tipo', 'Qtd', 'Investimento', 'Saldo Atual', 'Lucro (R$)', 'Retorno (%)']
@@ -131,9 +122,8 @@ def main():
         )
 
     except Exception as e:
-        st.error(f"Erro ao carregar dashboard: {e}")
-        st.exception(e)
+        st.error(f"Erro ao processar dados: {e}")
+        st.exception(e) # Mostra o erro detalhado para debug
 
 if __name__ == "__main__":
     main()
-
