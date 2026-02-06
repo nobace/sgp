@@ -47,7 +47,7 @@ def update_all_market_data():
         except: return 1.0
 
     # Dicionário de preservação
-    precos_preservados = {str(d['ticker']).strip(): clean_manual_val(d['close_price']) for d in dados_market_atuais}
+    precos_preservados = {str(d['ticker']).strip(): d['close_price'] for d in dados_market_atuais}
 
     precos_finais = {}
     agora = datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')
