@@ -74,8 +74,8 @@ def update_all_market_data():
     df_td_assets = df_assets[df_assets['type'] == 'TESOURO']
     if not df_td_assets.empty:
         print("🔍 Buscando preços do Tesouro Direto...")
-        # Link persistente para o CSV de preços e taxas
-        url_td = "https://www.tesourotransparente.gov.br/ckan/dataset/df56114f-2e4a-4a93-81e9-963a3d3ad550/resource/796d2059-14e9-44e3-86c3-0cadaec32b3f/download/PrecoTaxaTesouroDireto.csv"
+        # Link persistente para o CSV de preços e taxas        
+        url_td = "https://www.tesourotransparente.gov.br/ckan/dataset/df56aa42-484a-4a59-8184-7676580c81e3/resource/796d2059-14e9-44e3-80c9-2d9e30b405c1/download/precotaxatesourodireto.csv"
         try:
             df_td = pd.read_csv(url_td, sep=';', decimal=',', encoding='latin1')
             df_td['Data Vencimento'] = pd.to_datetime(df_td['Data Vencimento'], dayfirst=True)
