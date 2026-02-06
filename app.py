@@ -49,23 +49,38 @@ if df_assets.empty:
 
 # Processamento
 def get_positions(df_assets, df_trans, df_market):
-    # Quantidade atual por ativo e instituição
+    # 1. Garantir que as quantidades e preços sejam numéricos (Limpando possíveis textos/vírgulas)
+    for df in [df_trans, df_market]:
+        for col in ['quantity', 'close_price']:
+            if col in df.columns:
+                # Transforma para string, troca vírgula por ponto e remove R$ ou outros símbolos
+                df[col] = pd.to_numeric(
+                    df[col].astype(str)
+                           .str.replace('R$', '', regex=False)
+                           .str.replace('.', '', regex=False) # Remove ponto de milhar se houver
+                           .str.replace(',', '.', regex=False) # Troca vírgula decimal por ponto
+                           .str.strip(), 
+                    errors='coerce'
+                ).fillna(0) # Se falhar, vira zero para não travar o cálculo
+
+    # 2. Agrupar quantidades por ticker e instituição
     pos = df_trans.groupby(['ticker', 'institution'])['quantity'].sum().reset_index()
     pos = pos.merge(df_assets, on='ticker', how='left')
     pos = pos.merge(df_market[['ticker', 'close_price']], on='ticker', how='left')
     
-    # Câmbio com TRATAMENTO DE ERRO (Try/Except)
+    # 3. Câmbio com tratamento de erro (Yahoo ou Fallback)
     try:
         usd_quote = yf.Ticker("BRL=X").fast_info['last_price']
-        if usd_quote is None or usd_quote == 0:
-            raise ValueError("Preço inválido")
-    except Exception as e:
-        st.warning("⚠️ Yahoo Finance limitado. Usando cotação de segurança (R$ 5,85).")
-        usd_quote = 5.85 # Valor de fallback para o app não travar
+        if not usd_quote: raise ValueError()
+    except:
+        usd_quote = 5.85
     
+    # 4. Cálculo final (Garantindo que os tipos batam)
     pos['valor_brl'] = pos.apply(
-        lambda x: (x['quantity'] * x['close_price'] * usd_quote) if x['currency'] == 'USD' 
-        else (x['quantity'] * x['close_price']), axis=1
+        lambda x: (float(x['quantity']) * float(x['close_price']) * float(usd_quote)) 
+        if str(x['currency']).upper() == 'USD' 
+        else (float(x['quantity']) * float(x['close_price'])), 
+        axis=1
     )
     return pos, usd_quote
 
@@ -104,6 +119,7 @@ with t2:
 with t3:
 
     st.dataframe(df_pos[['ticker', 'institution', 'type', 'quantity', 'valor_brl']].style.format({'valor_brl': 'R$ {:,.2f}'}), use_container_width=True)
+
 
 
 
