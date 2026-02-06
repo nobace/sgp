@@ -31,22 +31,24 @@ def update_all_market_data():
         print(f"❌ Erro Autenticação: {e}")
         return
 
-    # Leitura das abas com nomes padronizados
-    df_assets = pd.DataFrame(sh.worksheet("assets").get_all_records())
+    # 1. Leitura das Abas
+    ws_assets = sh.worksheet("assets")
+    df_assets = pd.DataFrame(ws_assets.get_all_records())
     df_assets.columns = [c.lower().strip() for c in df_assets.columns]
     
-    df_trans = pd.DataFrame(sh.worksheet("transactions").get_all_records())
-    df_trans.columns = [c.lower().strip() for c in df_trans.columns]
+    ws_market = sh.worksheet("market_data")
+    dados_market_atuais = ws_market.get_all_records()
+    # Criar dicionário com o que já existe na planilha para preservar valores manuais
+    precos_na_planilha = {str(d['ticker']).strip(): d['close_price'] for d in dados_market_atuais}
 
     precos_finais = {}
     agora = datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')
 
-    # --- PARTE A: YAHOO FINANCE (Ações, FII, BDR, ETFs e DÓLAR) ---
+    # --- PARTE A: YAHOO FINANCE ---
     tipos_yahoo = ['ACAO_BR', 'FII', 'BDR', 'ETF_BR', 'ETF_US']
     tickers_yahoo = df_assets[df_assets['type'].isin(tipos_yahoo)]['ticker'].unique().tolist()
-    tickers_yahoo.append('USDBRL=X') # Busca sempre o dólar
+    tickers_yahoo.append('USDBRL=X')
 
-    print(f"🔍 Buscando {len(tickers_yahoo)} ativos no Yahoo Finance...")
     try:
         data_yf = yf.download(tickers_yahoo, period="1d", group_by='ticker', progress=False)
         for t in tickers_yahoo:
@@ -60,14 +62,12 @@ def update_all_market_data():
     df_fundos = df_assets[df_assets['type'] == 'FUNDO']
     mapa_cnpjs = {str(r['isin_cnpj']).replace('.','').replace('-','').replace('/','').zfill(14): str(r['ticker']).strip() 
                   for _, r in df_fundos.iterrows() if r.get('isin_cnpj')}
-    
     if mapa_cnpjs:
-        headers = {'User-Agent': 'Mozilla/5.0'}
         for i in range(3):
             mes = (datetime.date.today() - datetime.timedelta(days=i*28)).strftime('%Y%m')
             url = f"https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_{mes}.zip"
             try:
-                resp = requests.get(url, headers=headers, timeout=60)
+                resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60)
                 if resp.status_code == 200:
                     df_cvm = pd.read_csv(io.BytesIO(resp.content), sep=';', compression='zip', encoding='latin1')
                     col_cnpj = [c for c in df_cvm.columns if 'CNPJ' in c.upper()][0]
@@ -94,34 +94,32 @@ def update_all_market_data():
                 if not df_hoje[mask].empty: precos_finais[ticker] = float(df_hoje[mask].iloc[0]['PU Base Manha'])
         except: pass
 
-    # --- PARTE D: SALDOS MANUAIS (FGTS e PREVIDÊNCIA) ---
+    # --- PARTE FINAL: GRAVAÇÃO COM PRESERVAÇÃO ---
     tipos_manuais = ['FGTS', 'PREVIDENCIA', 'LCA', 'CDB']
-    for _, row in df_assets[df_assets['type'].isin(tipos_manuais)].iterrows():
-        t = str(row['ticker']).strip()
-        # Busca o preço da ÚLTIMA linha deste ticker na aba transactions
-        match_t = df_trans[df_trans['ticker'] == t]
-        if not match_t.empty:
-            val_p = str(match_t.iloc[-1]['price']).replace('.', '').replace(',', '.')
-            precos_finais[t] = float(val_p)
-        else: precos_finais[t] = 1.0
-
-    # Gravação Final (Evita deslocamentos)
-    ws_market = sh.worksheet("market_data")
-    ws_market.clear()
     
-    output = []
-    # Segue a ordem da aba assets
+    rows_to_save = []
     for t in df_assets['ticker'].unique():
         t_str = str(t).strip()
-        if t_str:
-            output.append([t_str, float(precos_finais.get(t_str, 1.0)), agora])
-    
-    # Adiciona o Dólar no final para o App usar
-    if 'USDBRL=X' in precos_finais:
-        output.append(['USDBRL=X', precos_finais['USDBRL=X'], agora])
+        if not t_str: continue
+        
+        tipo_ativo = df_assets[df_assets['ticker'] == t_str]['type'].values[0]
+        
+        # Se for manual e JÁ existir na market_data, mantém o valor de lá
+        if tipo_ativo in tipos_manuais and t_str in precos_na_planilha:
+            preco_vinal = precos_na_planilha[t_str]
+        else:
+            # Caso contrário, usa o valor que o robô buscou (ou 1.0 se falhou)
+            preco_vinal = precos_finais.get(t_str, 1.0)
+            
+        rows_to_save.append([t_str, float(str(preco_vinal).replace(',', '.')), agora])
 
-    ws_market.update(values=[['ticker', 'close_price', 'last_update']] + output, range_name='A1')
-    print(f"🚀 Planilha atualizada com sucesso em {agora}!")
+    # Adicionar o Dólar sempre atualizado
+    if 'USDBRL=X' in precos_finais:
+        rows_to_save.append(['USDBRL=X', precos_finais['USDBRL=X'], agora])
+
+    ws_market.clear()
+    ws_market.update(values=[['ticker', 'close_price', 'last_update']] + rows_to_save, range_name='A1')
+    print(f"🚀 Atualização concluída. Manuais preservados.")
 
 if __name__ == "__main__":
     update_all_market_data()
