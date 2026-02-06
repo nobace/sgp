@@ -68,36 +68,37 @@ def update_all_market_data():
         hoje = datetime.date.today()
         df_cvm = None
         
-        # Tenta os últimos 4 meses para garantir que ache o arquivo mais recente
         for i in range(4):
             data_alvo = hoje - datetime.timedelta(days=i*28)
             mes = data_alvo.strftime('%Y%m')
-            # Link validado por você
             url = f"https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_{mes}.zip"
             
             try:
                 print(f" tentando baixar mês {mes}...")
-                # storage_options com User-Agent para evitar bloqueios
                 df_cvm = pd.read_csv(url, sep=';', compression='zip', encoding='latin1', 
                                      storage_options={'User-Agent': 'Mozilla/5.0'})
-                print(f"✅ Arquivo de {mes} baixado com sucesso!")
-                break
+                
+                # IDENTIFICAÇÃO DINÂMICA DA COLUNA DE CNPJ
+                # Tenta achar 'CNPJ_FUNDO_CLASSE' ou 'CNPJ_FUNDO'
+                col_cnpj = [c for c in df_cvm.columns if 'CNPJ_FUNDO' in c][0]
+                
+                # Limpeza e processamento
+                df_cvm['cnpj_key'] = df_cvm[col_cnpj].str.replace(r'\D', '', regex=True)
+                df_cvm = df_cvm.sort_values('DT_COMPTC').drop_duplicates(col_cnpj, keep='last')
+                cvm_dict = df_cvm.set_index('cnpj_key')['VL_QUOTA'].to_dict()
+                
+                contagem_fundos = 0
+                for cnpj, ticker in mapa_cnpjs.items():
+                    if cnpj in cvm_dict:
+                        precos_finais[ticker] = float(cvm_dict[cnpj])
+                        contagem_fundos += 1
+                
+                if contagem_fundos > 0:
+                    print(f"✅ {contagem_fundos} fundos atualizados com dados de {mes}.")
+                    break
             except Exception as e:
-                print(f"⚠️ Mês {mes} indisponível ou link quebrado.")
+                print(f"⚠️ Mês {mes} indisponível: {e}")
                 continue
-
-        if df_cvm is not None:
-            # Limpa e processa a base da CVM
-            df_cvm['cnpj_key'] = df_cvm['CNPJ_FUNDO'].str.replace(r'\D', '', regex=True)
-            df_cvm = df_cvm.sort_values('DT_COMPTC').drop_duplicates('CNPJ_FUNDO', keep='last')
-            cvm_dict = df_cvm.set_index('cnpj_key')['VL_QUOTA'].to_dict()
-            
-            contagem_fundos = 0
-            for cnpj, ticker in mapa_cnpjs.items():
-                if cnpj in cvm_dict:
-                    precos_finais[ticker] = float(cvm_dict[cnpj])
-                    contagem_fundos += 1
-            print(f"📊 {contagem_fundos} fundos atualizados via CVM.")
 
     # --- PARTE C: ATIVOS MANUAIS OU RENDA FIXA ---
     # Para o que sobrar (LCA, FGTS, Tesouro), mantemos 1.0 para manter o valor original do saldo
