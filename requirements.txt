@@ -1,0 +1,7 @@
+streamlit
+pandas
+plotly
+yfinance
+st-gsheets-connection
+gspread
+google-auth
