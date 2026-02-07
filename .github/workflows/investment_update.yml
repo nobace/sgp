@@ -31,4 +31,4 @@ jobs:
         env:
           GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
           BRAPI_TOKEN: ${{ secrets.BRAPI_TOKEN }}
-        run: update_dividends.py
+        run: python update_dividends.py
