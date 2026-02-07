@@ -9,7 +9,7 @@ import numpy as np
 # --- FUNÇÕES DE UTILIDADE ---
 
 def clean_num(val):
-    if val is None or val == "" or val == "-": return 0.0
+    if val is None or val == "" or val == "-" or val == "A confirmar": return 0.0
     s = str(val).strip()
     if "," in s:
         s = s.replace(".", "").replace(",", ".")
@@ -18,6 +18,7 @@ def clean_num(val):
     except:
         return 0.0
 
+@st.cache_data(ttl=600) # Cache de 10 minutos para não estourar limite do Google
 def load_data():
     try:
         creds_json = json.loads(st.secrets["GOOGLE_SHEETS_CREDS"])
@@ -36,103 +37,98 @@ def load_data():
         except:
             calendar = pd.DataFrame()
             
-        return assets, trans, market, calendar, sh
+        return assets, trans, market, calendar
     except Exception as e:
         st.error(f"Erro na conexão com Google Sheets: {e}")
-        return None, None, None, None, None
+        return None, None, None, None
 
 def main():
-    st.set_page_config(page_title="Gestão Patrimonial", layout="wide", page_icon="📈")
-    st.title("🚀 Dashboard de Investimentos")
+    st.set_page_config(page_title="Investimentos Dashboard", layout="wide", page_icon="💰")
+    st.title("📊 Gestão de Patrimônio & Proventos")
     
-    df_assets, df_trans, df_market, df_cal, sh = load_data()
+    df_assets, df_trans, df_market, df_cal = load_data()
     
     if df_assets is not None:
+        # Padronização de Colunas
         for df in [df_assets, df_trans, df_market, df_cal]:
             if not df.empty:
                 df.columns = [c.lower().strip() for c in df.columns]
 
-        tickers_manuais = df_assets[df_assets['manual_update'].astype(str).str.upper().isin(['S', 'SIM', '1', 'TRUE'])]['ticker'].unique()
-
-        for col in ['quantity', 'price', 'costs', 'exchange_rate']:
-            if col in df_trans.columns: df_trans[col] = df_trans[col].apply(clean_num)
-        
+        # Processamento de Preços
         df_market['close_price'] = df_market['close_price'].apply(clean_num)
         
-        # Compensação manual (100x) apenas para quem tem a flag
-        df_market.loc[df_market['ticker'].isin(tickers_manuais), 'close_price'] *= 100
-
-        # Investimento BRL
-        df_trans['total_invested_brl'] = df_trans.apply(
-            lambda r: r['costs'] if r['costs'] > 0 
-            else (r['quantity'] * r['price'] * (r['exchange_rate'] if r['exchange_rate'] > 0 else 1.0)), 
-            axis=1
-        )
-
-        resumo = df_trans.groupby('ticker').agg({'quantity': 'sum', 'total_invested_brl': 'sum'}).reset_index()
-        resumo = resumo.merge(df_market[['ticker', 'close_price', 'last_update']], on='ticker', how='left')
+        # Cruzamento de Dados para Dashboard
+        # 1. Calcular Qtd atual via Transactions
+        for col in ['quantity', 'price', 'exchange_rate']:
+            if col in df_trans.columns: df_trans[col] = df_trans[col].apply(clean_num)
+        
+        # Filtro de tickers manuais (Previdência, FGTS)
+        tickers_manuais = df_assets[df_assets['manual_update'].astype(str).str.upper().isin(['S', 'SIM', '1', 'TRUE'])]['ticker'].unique()
+        
+        # Cálculo de Saldo
+        resumo = df_trans.groupby('ticker').agg({'quantity': 'sum'}).reset_index()
+        resumo = resumo.merge(df_market[['ticker', 'close_price']], on='ticker', how='left')
         resumo = resumo.merge(df_assets[['ticker', 'name', 'type', 'currency']], on='ticker', how='left')
         
+        # Moeda e Câmbio
         usd_val = df_market[df_market['ticker'] == 'USDBRL=X']['close_price'].values[0] if 'USDBRL=X' in df_market['ticker'].values else 1.0
-        st.sidebar.metric("Câmbio Dólar", f"R$ {usd_val:.2f}")
-
-        # --- LÓGICA DE PREÇO RESILIENTE ---
-        resumo['preco_medio'] = np.where(resumo['quantity'] > 0, resumo['total_invested_brl'] / resumo['quantity'], 0)
         
-        # Se o preço de mercado for 0 ou 1 (não encontrado), usamos o preço médio (ideal para LCAs)
-        resumo['preco_final'] = resumo.apply(
-            lambda r: r['preco_medio'] if (r['close_price'] <= 1.0 and r['ticker'] not in ['USDBRL=X']) else r['close_price'],
-            axis=1
+        resumo['saldo_brl'] = resumo.apply(
+            lambda r: (r['quantity'] * r['close_price']) * (usd_val if str(r['currency']).upper() == 'USD' else 1.0), axis=1
         )
 
-        resumo['saldo_atual'] = resumo.apply(
-            lambda r: (r['quantity'] * r['preco_final']) * (usd_val if str(r['currency']).upper() == 'USD' else 1.0), 
-            axis=1
-        )
+        # --- KPIs NO TOPO ---
+        total_patrimonio = resumo['saldo_brl'].sum()
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Patrimônio Total", f"R$ {total_patrimonio:,.2f}")
+        col2.metric("Dólar Hoje", f"R$ {usd_val:.2f}")
         
-        resumo['lucro_abs'] = resumo['saldo_atual'] - resumo['total_invested_brl']
-        resumo['rentabilidade'] = np.where(resumo['total_invested_brl'] > 0, (resumo['lucro_abs'] / resumo['total_invested_brl']) * 100, 0)
-        
-        # Filtra apenas o que você possui saldo (esconde ativos liquidados)
-        resumo_ativo = resumo[resumo['quantity'] > 0.001].copy()
-
-        # KPIs
-        t_atual = resumo_ativo['saldo_atual'].sum()
-        t_inv = resumo_ativo['total_invested_brl'].sum()
-        lucro_total = t_atual - t_inv
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Patrimônio Total", f"R$ {t_atual:,.2f}")
-        m2.metric("Total Investido", f"R$ {t_inv:,.2f}")
-        m3.metric("Lucro Total", f"R$ {lucro_total:,.2f}", f"{(lucro_total/t_inv)*100:.2f}%" if t_inv > 0 else "0%")
-
-        st.subheader("📊 Minha Carteira")
-        view = resumo_ativo[['name', 'type', 'quantity', 'preco_medio', 'saldo_atual', 'lucro_abs', 'rentabilidade']].copy()
-        view.columns = ['Nome', 'Tipo', 'Qtd', 'Preço Médio', 'Saldo Atual', 'Lucro (R$)', 'Retorno (%)']
-        
-        st.dataframe(
-            view.style.format({
-                'Preço Médio': 'R$ {:,.2f}', 'Saldo Atual': 'R$ {:,.2f}', 
-                'Lucro (R$)': 'R$ {:,.2f}', 'Retorno (%)': '{:.2f}%'
-            }), use_container_width=True, hide_index=True
-        )
-
-        # Seção de Dividendos
+        # --- SEÇÃO DE PROVENTOS (O CORAÇÃO DO SISTEMA) ---
         st.divider()
-        st.subheader("💰 Próximos Recebimentos Estimados")
+        st.subheader("📅 Calendário de Recebimentos (Brapi Data)")
+        
         if not df_cal.empty:
+            # Limpar valores de dividendos
             df_cal['valor'] = df_cal['valor'].apply(clean_num)
-            df_futuro = df_cal[df_cal['status'].str.contains('Confirmado', case=False, na=False)].copy()
-            if not df_futuro.empty:
-                previsao = df_futuro.merge(resumo_ativo[['ticker', 'quantity']], on='ticker', how='inner')
-                previsao['recebimento_estimado'] = previsao['valor'] * previsao['quantity']
-                total_previsto = previsao['recebimento_estimado'].sum()
-                if total_previsto > 0:
-                    st.success(f"💵 Total previsto: **R$ {total_previsto:,.2f}**")
-                    st.dataframe(previsao[['ticker', 'data (pagto/ex)', 'valor', 'quantity', 'recebimento_estimado']], use_container_width=True, hide_index=True)
+            
+            # Filtra apenas o que você tem na carteira hoje
+            ativos_carteira = resumo[resumo['quantity'] > 0]['ticker'].tolist()
+            cal_filtrado = df_cal[df_cal['ticker'].isin(ativos_carteira)].copy()
+            
+            if not cal_filtrado.empty:
+                # Merge com a quantidade para calcular o total a receber
+                cal_filtrado = cal_filtrado.merge(resumo[['ticker', 'quantity']], on='ticker', how='left')
+                cal_filtrado['total_receber'] = cal_filtrado['valor'] * cal_filtrado['quantity']
+                
+                # Divide entre Confirmados (Dinheiro certo) e Histórico
+                confirmados = cal_filtrado[cal_filtrado['status'].isin(['Confirmado', 'Anunciado'])].copy()
+                historicos = cal_filtrado[cal_filtrado['status'] == 'Histórico'].copy()
+                
+                if not confirmados.empty:
+                    st.success(f"💰 Total a receber confirmado: **R$ {confirmados['total_receber'].sum():,.2f}**")
+                    st.dataframe(
+                        confirmados[['ticker', 'data ex', 'data pagamento', 'valor', 'quantity', 'total_receber']],
+                        column_config={
+                            "ticker": "Ativo",
+                            "data ex": "Data Com",
+                            "data pagamento": "Data Pagto",
+                            "valor": "R$ / Cota",
+                            "quantity": "Qtd Atual",
+                            "total_receber": "Total Líquido"
+                        },
+                        hide_index=True, use_container_width=True
+                    )
+                else:
+                    st.info("Nenhum novo provento anunciado para seus ativos nos últimos dias.")
 
-    else:
-        st.warning("Carregando dados...")
+                with st.expander("Ver últimos proventos pagos (Histórico)"):
+                    st.table(historicos[['ticker', 'data ex', 'valor']].head(10))
+
+        # --- TABELA DE ATIVOS ---
+        st.divider()
+        st.subheader("📋 Detalhamento da Carteira")
+        resumo_view = resumo[resumo['quantity'] > 0][['ticker', 'name', 'type', 'quantity', 'close_price', 'saldo_brl']]
+        st.dataframe(resumo_view.style.format({'close_price': '{:.2f}', 'saldo_brl': '{:,.2f}'}), use_container_width=True)
 
 if __name__ == "__main__":
     main()
