@@ -39,13 +39,13 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/checkout@v3
+        uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
       - name: Install Dependencies
         run: |
-          pip install yfinance pandas gspread google-auth
+          pip install yfinance pandas gspread google-auth requests
 
       - name: Run Dividend Update
         env:
