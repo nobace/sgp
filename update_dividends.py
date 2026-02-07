@@ -31,19 +31,31 @@ def update_dividends():
     for t in tickers:
         try:
             asset = yf.Ticker(t)
+            
+            # 1. Tenta buscar no Calendário (Datas futuras/confirmadas)
             cal = asset.calendar
             if cal is not None and 'Dividend Date' in cal:
-                proventos.append([t, cal['Dividend Date'].strftime('%d/%m/%Y'), cal.get('Dividend', 0), "Previsto", agora])
-            else:
-                info = asset.info
-                if info.get('lastDividendValue'):
-                    proventos.append([t, "Último Pago", info['lastDividendValue'], "Histórico", agora])
+                data_dt = cal['Dividend Date']
+                if hasattr(data_dt, 'strftime'):
+                    proventos.append([t, data_dt.strftime('%d/%m/%Y'), cal.get('Dividend', 0), "Confirmado", agora])
+                    continue
+            
+            # 2. Se não achou data futura, busca a data do ÚLTIMO pagamento no histórico
+            hist_divs = asset.dividends
+            if not hist_divs.empty:
+                ultima_data = hist_divs.index[-1].strftime('%d/%m/%Y')
+                ultimo_valor = hist_divs.iloc[-1]
+                proventos.append([t, ultima_data, ultimo_valor, "Último Pago", agora])
+                
         except: continue
 
     ws_calendar.clear()
-    headers = [['Ticker', 'Data Ref', 'Valor', 'Status', 'Consultado em']]
-    ws_calendar.update(values=headers + (proventos if proventos else [['-', '-', '-', '-', agora]]), range_name='A1')
-    print("✅ Agenda de dividendos atualizada.")
+    headers = [['Ticker', 'Data (Pagto/Ex)', 'Valor por Cota', 'Status', 'Consultado em']]
+    if proventos:
+        # Ordena para mostrar as datas mais recentes/futuras primeiro
+        ws_calendar.update(values=headers + proventos, range_name='A1')
+    else:
+        ws_calendar.update(values=headers + [['-', '-', '-', '-', agora]], range_name='A1')
 
 if __name__ == "__main__":
     update_dividends()
