@@ -32,3 +32,20 @@ jobs:
           GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
           BRAPI_TOKEN: ${{ secrets.BRAPI_TOKEN }}
         run: python update_dividends.py
+        
+  # Adiciona a rotina de auditoria histórica (Roda todo domingo às 12h)
+  audit-history:
+    if: github.event.schedule == '0 12 * * 0' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install Dependencies
+        run: pip install yfinance pandas gspread google-auth requests
+      - name: Run History Audit
+        env:
+          GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
+          BRAPI_TOKEN: ${{ secrets.BRAPI_TOKEN }}
+        run: python update_dividend_history.py
