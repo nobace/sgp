@@ -10,26 +10,6 @@ on:
   workflow_dispatch: # Permite rodar manualmente pelo botão no GitHub
 
 jobs:
-  update-prices:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/checkout@v3
-        with:
-          python-version: '3.9'
-
-      - name: Install Dependencies
-        run: |
-          pip install yfinance pandas gspread google-auth requests
-
-      - name: Run Price Update
-        env:
-          GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
-        run: python update_market_data.py
-
   update-dividends:
     # Este job roda apenas no gatilho das 12h UTC ou manual
     if: github.event.schedule == '0 12 * * *' || github.event_name == 'workflow_dispatch'
@@ -51,4 +31,4 @@ jobs:
         env:
           GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
           BRAPI_TOKEN: ${{ secrets.BRAPI_TOKEN }}
-        run: python update_dividends.py
+        run: python teste_brapi.py
