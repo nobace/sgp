@@ -1,4 +1,4 @@
-name: Update Investment Data
+name: Atualização dividendos - SGP
 
 on:
   schedule:
