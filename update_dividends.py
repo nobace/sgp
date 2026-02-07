@@ -12,7 +12,7 @@ def update_dividends():
     BRAPI_TOKEN = os.environ.get('BRAPI_TOKEN')
     
     if not BRAPI_TOKEN:
-        print("⚠️ AVISO: BRAPI_TOKEN não encontrada. Usando apenas Yahoo Finance (menos preciso).")
+        print("⚠️ AVISO: BRAPI_TOKEN não encontrada.")
     else:
         print("✅ BRAPI_TOKEN detectada. Iniciando consulta profissional.")
 
@@ -32,8 +32,9 @@ def update_dividends():
 
     agora_dt = datetime.datetime.now()
     proventos = []
+    tickers_com_sucesso = set()
 
-    # 1. CONSULTA BRAPI (Ativos BR: Ação, FII e ETF_BR)
+    # 1. CONSULTA BRAPI (Ativos BR)
     ativos_br = df_assets[df_assets['type'].isin(['ACAO_BR', 'FII', 'ETF_BR'])]['ticker'].tolist()
     
     if ativos_br and BRAPI_TOKEN:
@@ -44,28 +45,36 @@ def update_dividends():
             res = requests.get(url, timeout=30).json()
             for stock in res.get('results', []):
                 t = stock.get('symbol')
-                divs = stock.get('dividendsData', {}).get('cashDividends', [])
+                divs_data = stock.get('dividendsData', {})
+                if not divs_data: continue
+                
+                divs = divs_data.get('cashDividends', [])
                 if divs:
                     last_div = divs[0]
-                    # Brapi usa ISO YYYY-MM-DD
-                    d_ex = last_div['lastDateCom'].split('T')[0]
-                    d_ex = datetime.datetime.strptime(d_ex, '%Y-%m-%d').strftime('%d/%m/%Y')
                     
-                    d_pg = "A confirmar"
-                    if last_div.get('paymentDate'):
-                        d_pg_raw = last_div['paymentDate'].split('T')[0]
-                        d_pg = datetime.datetime.strptime(d_pg_raw, '%Y-%m-%d').strftime('%d/%m/%Y')
+                    # Tentativa resiliente de pegar a Data Ex (lastDateCom ou date)
+                    d_ex_raw = last_div.get('lastDateCom') or last_div.get('date')
+                    if not d_ex_raw: continue
                     
-                    valor = float(last_div.get('rate', 0))
-                    status = "Confirmado" if "/" in d_pg else "Anunciado"
-                    proventos.append([t, d_ex, d_pg, valor, status, agora_dt.strftime('%d/%m/%Y %H:%M')])
-            print(f"✅ {len(proventos)} proventos obtidos via Brapi.")
+                    try:
+                        d_ex = datetime.datetime.fromisoformat(d_ex_raw.split('T')[0]).strftime('%d/%m/%Y')
+                        
+                        d_pg = "A confirmar"
+                        if last_div.get('paymentDate'):
+                            d_pg_raw = last_div['paymentDate'].split('T')[0]
+                            d_pg = datetime.datetime.strptime(d_pg_raw, '%Y-%m-%d').strftime('%d/%m/%Y')
+                        
+                        valor = float(last_div.get('rate', 0))
+                        status = "Confirmado" if "/" in d_pg else "Anunciado"
+                        
+                        proventos.append([t, d_ex, d_pg, valor, status, agora_dt.strftime('%d/%m/%Y %H:%M')])
+                        tickers_com_sucesso.add(t)
+                    except: continue
         except Exception as e:
-            print(f"⚠️ Erro na Brapi: {e}")
+            print(f"⚠️ Erro no processamento da Brapi: {e}")
 
-    # 2. CONSULTA YAHOO (BDRs, ETFs US e Fallback)
-    processados = [p[0] for p in proventos]
-    restantes = df_assets[~df_assets['ticker'].isin(processados)]
+    # 2. CONSULTA YAHOO (BDRs, ETFs US e Fallback para os que falharam na Brapi)
+    restantes = df_assets[~df_assets['ticker'].isin(tickers_com_sucesso)]
     
     for _, row in restantes.iterrows():
         t = str(row['ticker']).strip()
@@ -73,12 +82,13 @@ def update_dividends():
         if tipo not in ['ACAO_BR', 'FII', 'BDR', 'ETF_US', 'ETF_BR']: continue
         
         try:
-            # CORREÇÃO CRÍTICA: BDRs também precisam de .SA no Yahoo
+            # Garante sufixo .SA para ativos negociados na B3 (BR e BDR)
             t_yf = t
             if tipo in ['ACAO_BR', 'FII', 'BDR', 'ETF_BR'] and not t.endswith('.SA'):
                 t_yf = f"{t}.SA"
             
             asset = yf.Ticker(t_yf)
+            # Uso do .dividends para evitar 404 de quoteSummary
             hist = asset.dividends
             if not hist.empty:
                 u_ex = hist.index[-1]
@@ -86,16 +96,16 @@ def update_dividends():
                 proventos.append([t, u_ex.strftime('%d/%m/%Y'), "Histórico", val, "Histórico", agora_dt.strftime('%d/%m/%Y %H:%M')])
         except: continue
 
-    # Gravação
+    # Gravação Final
     ws_calendar.clear()
     headers = [['Ticker', 'Data Ex', 'Data Pagamento', 'Valor', 'Status', 'Atualizado em']]
     if proventos:
-        # Ordena: Confirmados primeiro, depois Anunciados, depois Histórico
+        # Ordenação: Confirmado < Anunciado < Histórico
         order = {"Confirmado": 0, "Anunciado": 1, "Histórico": 2}
         proventos.sort(key=lambda x: order.get(x[4], 3))
         ws_calendar.update(values=headers + proventos, range_name='A1')
     
-    print("✅ Sincronização Finalizada.")
+    print(f"✅ Sincronização Finalizada. Total de ativos: {len(proventos)}")
 
 if __name__ == "__main__":
     update_dividends()
