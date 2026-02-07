@@ -31,29 +31,32 @@ def update_prices():
         print(f"❌ Erro Autenticação: {e}")
         return
 
+    # 1. Carrega Assets e mapeia o Backup do Google Finance
     ws_assets = sh.worksheet("assets")
     df_assets = pd.DataFrame(ws_assets.get_all_records())
     df_assets.columns = [c.lower().strip() for c in df_assets.columns]
+    
+    def clean_val(val):
+        if val is None or val == "" or val == "close_price": return 0.0
+        s = str(val).strip()
+        if "," in s: s = s.replace(".", "").replace(",", ".")
+        try: return float(s)
+        except: return 0.0
+
+    # Dicionário de backup vindo da fórmula =GOOGLEFINANCE na planilha
+    precos_google_backup = {str(r['ticker']).strip(): clean_val(r.get('price_google', 0)) for _, r in df_assets.iterrows()}
     
     tickers_manuais = df_assets[df_assets['manual_update'].astype(str).str.upper().isin(['S', 'SIM', '1', 'TRUE'])]['ticker'].unique().tolist()
     agora = datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')
 
     ws_market = sh.worksheet("market_data")
     dados_market_atuais = ws_market.get_all_values()
-    
-    def clean_val(val):
-        if val is None or val == "" or val == "close_price": return 1.0
-        s = str(val).strip()
-        if "," in s: s = s.replace(".", "").replace(",", ".")
-        try: return float(s)
-        except: return 1.0
-
     precos_preservados = {str(row[0]).strip(): clean_val(row[1]) for row in dados_market_atuais[1:]} if len(dados_market_atuais) > 1 else {}
+    
     precos_finais = {}
 
-    # --- MAPEAMENTO PARA YAHOO FINANCE (BDR INCLUÍDA NO .SA) ---
+    # --- YAHOO FINANCE ---
     tipos_sa = ['ACAO_BR', 'FII', 'ETF_BR', 'BDR']
-    tipos_direto = ['ETF_US']
     mapa_tickers = {}
 
     for _, row in df_assets.iterrows():
@@ -63,7 +66,7 @@ def update_prices():
         if row['type'] in tipos_sa:
             t_yahoo = f"{t_orig}.SA" if not t_orig.endswith('.SA') else t_orig
             mapa_tickers[t_yahoo] = t_orig
-        elif row['type'] in tipos_direto:
+        elif row['type'] == 'ETF_US':
             mapa_tickers[t_orig] = t_orig
 
     tickers_yahoo = list(mapa_tickers.keys())
@@ -74,12 +77,22 @@ def update_prices():
         try:
             data_yf = yf.download(tickers_yahoo, period="1d", group_by='ticker', progress=False)
             for ty in tickers_yahoo:
+                tp = mapa_tickers[ty]
                 try:
-                    tp = mapa_tickers[ty]
                     val = data_yf[ty]['Close'].iloc[-1] if len(tickers_yahoo) > 1 else data_yf['Close'].iloc[-1]
-                    if pd.notnull(val): precos_finais[tp] = float(val)
+                    if pd.notnull(val) and val > 0:
+                        precos_finais[tp] = float(val)
                 except: pass
         except: pass
+
+    # --- LOGICA DE REDUNDÂNCIA: GOOGLE FINANCE ---
+    for t in df_assets['ticker'].unique():
+        ts = str(t).strip()
+        if ts not in precos_finais and ts not in tickers_manuais and ts != 'USDBRL=X':
+            val_backup = precos_google_backup.get(ts, 0)
+            if val_backup > 0:
+                precos_finais[ts] = val_backup
+                print(f"⚠️ {ts}: Usando backup do Google Finance")
 
     # --- CVM (FUNDOS) ---
     df_fundos = df_assets[(df_assets['type'] == 'FUNDO') & (~df_assets['ticker'].isin(tickers_manuais))]
@@ -92,8 +105,7 @@ def update_prices():
                 resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
                 if resp.status_code == 200:
                     df_cvm = pd.read_csv(io.BytesIO(resp.content), sep=';', compression='zip', encoding='latin1')
-                    col_cnpj = [c for c in df_cvm.columns if 'CNPJ' in c.upper()][0]
-                    df_cvm['cnpj_key'] = df_cvm[col_cnpj].str.replace(r'\D', '', regex=True).str.zfill(14)
+                    df_cvm['cnpj_key'] = df_cvm['CNPJ_FUNDO'].str.replace(r'\D', '', regex=True).str.zfill(14)
                     df_cvm = df_cvm.drop_duplicates('cnpj_key', keep='last')
                     cvm_dict = df_cvm.set_index('cnpj_key')['VL_QUOTA'].to_dict()
                     for cnpj, ticker in mapa_cnpjs.items():
@@ -130,7 +142,7 @@ def update_prices():
 
     ws_market.clear()
     ws_market.update(values=[['ticker', 'close_price', 'last_update']] + output, range_name='A1', value_input_option='RAW')
-    print(f"✅ Preços atualizados (BDRs agora com .SA): {agora}")
+    print(f"✅ Atualização de preços concluída: {agora}")
 
 if __name__ == "__main__":
     update_prices()
