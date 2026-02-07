@@ -9,47 +9,34 @@ import requests
 from io import StringIO
 
 def get_fundamentus_data(ticker, is_fii=True):
-    """Web scraping do Fundamentus para Ações e FIIs brasileiros"""
+    """Web scraping otimizado para Fundamentus"""
     ticker = str(ticker).strip().upper()
-    if is_fii:
-        url = f"https://www.fundamentus.com.br/fii_proventos.php?papel={ticker}&tipo=2"
-    else:
-        url = f"https://www.fundamentus.com.br/proventos.php?papel={ticker}&tipo=2"
+    url = f"https://www.fundamentus.com.br/{'fii_' if is_fii else ''}proventos.php?papel={ticker}&tipo=2"
     
-    # Headers simulando um navegador Chrome real para evitar bloqueio 403
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Referer': 'https://www.fundamentus.com.br/'
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        session = requests.Session()
+        response = session.get(url, headers=headers, timeout=20)
         if response.status_code == 200:
-            # Forçamos o encoding para evitar erros de caracteres especiais
-            response.encoding = 'ISO-8859-1' 
+            response.encoding = 'ISO-8859-1'
+            # Lemos todas as tabelas e focamos na que tem dados
             tables = pd.read_html(StringIO(response.text), decimal=',', thousands='.')
-            
-            # O Fundamentus costuma ter a tabela principal no índice 0
-            if tables and len(tables[0]) > 0:
-                df = tables[0]
-                # Se a tabela tiver a estrutura esperada
-                if is_fii:
-                    # FII: [Data Com, Tipo, Data Pagto, Valor]
-                    d_ex = str(df.iloc[0, 0])
-                    d_pg = str(df.iloc[0, 2])
-                    val = float(df.iloc[0, 3])
-                    print(f"✅ {ticker}: Dados obtidos via Fundamentus (FII)")
-                    return d_ex, d_pg, val, "Fundamentus"
-                else:
-                    # Ação: [Data Com, Valor, Tipo, Data Pagto, Qtd]
-                    d_ex = str(df.iloc[0, 0])
-                    d_pg = str(df.iloc[0, 3])
-                    val = float(df.iloc[0, 1])
-                    print(f"✅ {ticker}: Dados obtidos via Fundamentus (Ação)")
-                    return d_ex, d_pg, val, "Fundamentus"
-    except Exception as e:
-        print(f"⚠️ {ticker}: Falha no Fundamentus: {e}")
+            for df in tables:
+                if len(df) > 0 and 'Valor' in df.columns:
+                    # Removemos possíveis linhas de lixo ou strings não conversíveis
+                    df = df.dropna(subset=['Valor'])
+                    
+                    if is_fii:
+                        # Ordem FII: [Última Data Com (0), Tipo (1), Data de Pagamento (2), Valor (3)]
+                        return str(df.iloc[0, 0]), str(df.iloc[0, 2]), float(df.iloc[0, 3]), "Fundamentus"
+                    else:
+                        # Ordem Ação: [Data (0), Valor (1), Tipo (2), Data de Pagamento (3), Qtd (4)]
+                        return str(df.iloc[0, 0]), str(df.iloc[0, 3]), float(df.iloc[0, 1]), "Fundamentus"
+    except: pass
     return None, None, None, None
 
 def update_dividends():
@@ -59,18 +46,11 @@ def update_dividends():
         creds = Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/spreadsheets'])
         client = gspread.authorize(creds)
         sh = client.open_by_key(ID_PLANILHA)
-    except Exception as e:
-        print(f"❌ Erro Autenticação: {e}")
-        return
+    except: return
 
-    ws_assets = sh.worksheet("assets")
-    df_assets = pd.DataFrame(ws_assets.get_all_records())
+    df_assets = pd.DataFrame(sh.worksheet("assets").get_all_records())
     df_assets.columns = [c.lower().strip() for c in df_assets.columns]
-    
-    try:
-        ws_calendar = sh.worksheet("dividend_calendar")
-    except:
-        ws_calendar = sh.add_worksheet(title="dividend_calendar", rows="100", cols="6")
+    ws_calendar = sh.worksheet("dividend_calendar")
 
     agora = datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')
     proventos = []
@@ -78,54 +58,36 @@ def update_dividends():
     for _, row in df_assets.iterrows():
         t = str(row['ticker']).strip()
         tipo = str(row['type']).upper()
-        if not t or tipo not in ['ACAO_BR', 'FII', 'BDR', 'ETF_US', 'ETF_BR']: continue
+        if tipo not in ['ACAO_BR', 'FII', 'BDR', 'ETF_US', 'ETF_BR']: continue
 
-        data_ex, data_pg, valor, fonte = None, None, None, None
+        # 1. TENTA FUNDAMENTUS
+        d_ex, d_pg, val, src = None, None, None, None
+        if tipo == 'FII': d_ex, d_pg, val, src = get_fundamentus_data(t, is_fii=True)
+        elif tipo == 'ACAO_BR': d_ex, d_pg, val, src = get_fundamentus_data(t, is_fii=False)
 
-        # 1. TENTA FUNDAMENTUS (Ações e FIIs BR)
-        if tipo == 'FII' or tipo == 'ETF_BR': # Alguns ETFs BR aparecem na busca de FIIs
-            data_ex, data_pg, valor, fonte = get_fundamentus_data(t, is_fii=True)
-        elif tipo == 'ACAO_BR':
-            data_ex, data_pg, valor, fonte = get_fundamentus_data(t, is_fii=False)
-
-        # 2. TENTA YAHOO (Fallback para BR e Primário para US/BDR)
-        if not valor:
+        # 2. YAHOO FALLBACK
+        if not val:
             try:
-                t_yahoo = f"{t}.SA" if tipo in ['ACAO_BR', 'FII', 'BDR', 'ETF_BR'] and not t.endswith('.SA') else t
-                asset = yf.Ticker(t_yahoo)
-                
-                # Para evitar 404 de fundamentus data no Yahoo (quoteSummary)
+                t_yf = f"{t}.SA" if tipo in ['ACAO_BR', 'FII', 'BDR', 'ETF_BR'] and not t.endswith('.SA') else t
+                asset = yf.Ticker(t_yf)
                 hist = asset.dividends
                 if not hist.empty:
-                    data_ex = hist.index[-1].strftime('%d/%m/%Y')
-                    data_pg = "Histórico"
-                    valor = float(hist.iloc[-1])
-                    fonte = "Yahoo (Hist)"
-                    
-                    if tipo != 'ETF_US': # Evita 404 em ETFs americanos
+                    d_ex, d_pg, val, src = hist.index[-1].strftime('%d/%m/%Y'), "Histórico", float(hist.iloc[-1]), "Yahoo"
+                    if tipo != 'ETF_US':
                         try:
                             cal = asset.calendar
                             if cal is not None and 'Dividend Date' in cal:
-                                data_ex = cal['Dividend Date'].strftime('%d/%m/%Y')
-                                data_pg = "Confirmado"
-                                valor = cal.get('Dividend', 0)
-                                fonte = "Yahoo (Cal)"
+                                d_ex, d_pg, val, src = cal['Dividend Date'].strftime('%d/%m/%Y'), "Confirmado", cal.get('Dividend', 0), "Yahoo"
                         except: pass
             except: continue
 
-        if valor:
-            status = "Confirmado" if ("/" in str(data_pg) or data_pg == "Confirmado") else "Histórico"
-            proventos.append([t, data_ex, data_pg, valor, status, agora])
+        if val:
+            status = "Confirmado" if ("/" in str(d_pg) or d_pg == "Confirmado") else "Histórico"
+            proventos.append([t, d_ex, d_pg, val, status, agora])
 
     ws_calendar.clear()
     headers = [['Ticker', 'Data Ex', 'Data Pagamento', 'Valor', 'Status', 'Atualizado em']]
-    if proventos:
-        proventos.sort(key=lambda x: x[4], reverse=False)
-        ws_calendar.update(values=headers + proventos, range_name='A1')
-    else:
-        ws_calendar.update(values=headers + [['-', '-', '-', '-', '-', agora]], range_name='A1')
-    
-    print(f"✅ Processo concluído em {agora}")
+    ws_calendar.update(values=headers + proventos, range_name='A1')
 
 if __name__ == "__main__":
     update_dividends()
