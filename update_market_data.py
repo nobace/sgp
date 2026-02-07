@@ -51,71 +51,40 @@ def update_prices():
     precos_preservados = {str(row[0]).strip(): clean_val(row[1]) for row in dados_market_atuais[1:]} if len(dados_market_atuais) > 1 else {}
     precos_finais = {}
 
-    # Yahoo Finance (Ações, FIIs, BDRs, ETFs e Dólar)
-    tipos_yahoo = ['ACAO_BR', 'FII', 'BDR', 'ETF_BR', 'ETF_US']
-    tickers_auto = [str(t).strip() for t in df_assets[(df_assets['type'].isin(tipos_yahoo)) & (~df_assets['ticker'].isin(tickers_manuais))]['ticker'].unique() if t]
-    tickers_auto.append('USDBRL=X')
+    # --- MAPEAMENTO PARA YAHOO FINANCE ---
+    tipos_br = ['ACAO_BR', 'FII', 'ETF_BR']
+    tipos_us_bdr = ['BDR', 'ETF_US']
+    mapa_tickers = {} # Yahoo_Ticker -> Planilha_Ticker
 
-    if tickers_auto:
+    for _, row in df_assets.iterrows():
+        t_orig = str(row['ticker']).strip()
+        if not t_orig or t_orig in tickers_manuais: continue
+        
+        if row['type'] in tipos_br:
+            t_yahoo = f"{t_orig}.SA" if not t_orig.endswith('.SA') else t_orig
+            mapa_tickers[t_yahoo] = t_orig
+        elif row['type'] in tipos_us_bdr:
+            mapa_tickers[t_orig] = t_orig
+
+    tickers_yahoo = list(mapa_tickers.keys())
+    tickers_yahoo.append('USDBRL=X')
+    mapa_tickers['USDBRL=X'] = 'USDBRL=X'
+
+    if tickers_yahoo:
         try:
-            data_yf = yf.download(tickers_auto, period="1d", group_by='ticker', progress=False)
-            for t in tickers_auto:
+            data_yf = yf.download(tickers_yahoo, period="1d", group_by='ticker', progress=False)
+            for ty in tickers_yahoo:
                 try:
-                    val = data_yf[t]['Close'].iloc[-1] if len(tickers_auto) > 1 else data_yf['Close'].iloc[-1]
-                    if pd.notnull(val): precos_finais[t] = float(val)
+                    tp = mapa_tickers[ty]
+                    val = data_yf[ty]['Close'].iloc[-1] if len(tickers_yahoo) > 1 else data_yf['Close'].iloc[-1]
+                    if pd.notnull(val): precos_finais[tp] = float(val)
                 except: pass
         except Exception as e: print(f"⚠️ Erro Yahoo: {e}")
 
-    # CVM (Fundos)
+    # --- CVM (FUNDOS) ---
     df_fundos = df_assets[(df_assets['type'] == 'FUNDO') & (~df_assets['ticker'].isin(tickers_manuais))]
     mapa_cnpjs = {str(r['isin_cnpj']).replace('.','').replace('-','').replace('/','').zfill(14): str(r['ticker']).strip() for _, r in df_fundos.iterrows() if r.get('isin_cnpj')}
     if mapa_cnpjs:
         for i in range(2):
             mes = (datetime.date.today() - datetime.timedelta(days=i*28)).strftime('%Y%m')
-            url = f"https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_{mes}.zip"
-            try:
-                resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
-                if resp.status_code == 200:
-                    df_cvm = pd.read_csv(io.BytesIO(resp.content), sep=';', compression='zip', encoding='latin1')
-                    col_cnpj = [c for c in df_cvm.columns if 'CNPJ' in c.upper()][0]
-                    df_cvm['cnpj_key'] = df_cvm[col_cnpj].str.replace(r'\D', '', regex=True).str.zfill(14)
-                    df_cvm = df_cvm.drop_duplicates('cnpj_key', keep='last')
-                    cvm_dict = df_cvm.set_index('cnpj_key')['VL_QUOTA'].to_dict()
-                    for cnpj, ticker in mapa_cnpjs.items():
-                        if cnpj in cvm_dict: precos_finais[ticker] = float(cvm_dict[cnpj])
-                    break
-            except: continue
-
-    # Tesouro Direto
-    df_td_assets = df_assets[(df_assets['type'] == 'TESOURO') & (~df_assets['ticker'].isin(tickers_manuais))]
-    if not df_td_assets.empty:
-        try:
-            resp_td = requests.get(get_tesouro_url(), timeout=30)
-            df_td = pd.read_csv(io.BytesIO(resp_td.content), sep=';', decimal=',', encoding='latin1')
-            df_td['Data Base'] = pd.to_datetime(df_td['Data Base'], dayfirst=True)
-            df_hoje = df_td[df_td['Data Base'] == df_td['Data Base'].max()]
-            for _, row in df_td_assets.iterrows():
-                t_td = str(row['ticker']).strip().upper()
-                ano = "".join(filter(str.isdigit, t_td))
-                if len(ano) == 2: ano = "20" + ano
-                tipo = "IPCA" if "IPCA" in t_td else "SELIC" if "SELIC" in t_td else "PREFIXADO"
-                mask = (df_hoje['Tipo Titulo'].str.upper().str.contains(tipo)) & (pd.to_datetime(df_hoje['Data Vencimento'], dayfirst=True).dt.year == int(ano))
-                if not df_hoje[mask].empty: precos_finais[t_td] = float(df_hoje[mask].iloc[0]['PU Base Manha'])
-        except: pass
-
-    # Gravação
-    output = []
-    for t in df_assets['ticker'].unique():
-        t_str = str(t).strip()
-        if not t_str: continue
-        val = precos_preservados.get(t_str, 1.0) if t_str in tickers_manuais else precos_finais.get(t_str, 1.0)
-        output.append([t_str, float(val), agora])
-    
-    if 'USDBRL=X' in precos_finais: output.append(['USDBRL=X', float(precos_finais['USDBRL=X']), agora])
-
-    ws_market.clear()
-    ws_market.update(values=[['ticker', 'close_price', 'last_update']] + output, range_name='A1', value_input_option='RAW')
-    print(f"✅ Preços atualizados: {agora}")
-
-if __name__ == "__main__":
-    update_prices()
+            url = f"
