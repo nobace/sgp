@@ -87,4 +87,50 @@ def update_prices():
     if mapa_cnpjs:
         for i in range(2):
             mes = (datetime.date.today() - datetime.timedelta(days=i*28)).strftime('%Y%m')
-            url = f"
+            url = f"https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_{mes}.zip"
+            try:
+                resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+                if resp.status_code == 200:
+                    df_cvm = pd.read_csv(io.BytesIO(resp.content), sep=';', compression='zip', encoding='latin1')
+                    col_cnpj = [c for c in df_cvm.columns if 'CNPJ' in c.upper()][0]
+                    df_cvm['cnpj_key'] = df_cvm[col_cnpj].str.replace(r'\D', '', regex=True).str.zfill(14)
+                    df_cvm = df_cvm.drop_duplicates('cnpj_key', keep='last')
+                    cvm_dict = df_cvm.set_index('cnpj_key')['VL_QUOTA'].to_dict()
+                    for cnpj, ticker in mapa_cnpjs.items():
+                        if cnpj in cvm_dict: precos_finais[ticker] = float(cvm_dict[cnpj])
+                    break
+            except: continue
+
+    # --- TESOURO DIRETO ---
+    df_td_assets = df_assets[(df_assets['type'] == 'TESOURO') & (~df_assets['ticker'].isin(tickers_manuais))]
+    if not df_td_assets.empty:
+        try:
+            resp_td = requests.get(get_tesouro_url(), timeout=30)
+            df_td = pd.read_csv(io.BytesIO(resp_td.content), sep=';', decimal=',', encoding='latin1')
+            df_td['Data Base'] = pd.to_datetime(df_td['Data Base'], dayfirst=True)
+            df_hoje = df_td[df_td['Data Base'] == df_td['Data Base'].max()]
+            for _, row in df_td_assets.iterrows():
+                t_td = str(row['ticker']).strip().upper()
+                ano = "".join(filter(str.isdigit, t_td))
+                if len(ano) == 2: ano = "20" + ano
+                tipo = "IPCA" if "IPCA" in t_td else "SELIC" if "SELIC" in t_td else "PREFIXADO"
+                mask = (df_hoje['Tipo Titulo'].str.upper().str.contains(tipo)) & (pd.to_datetime(df_hoje['Data Vencimento'], dayfirst=True).dt.year == int(ano))
+                if not df_hoje[mask].empty: precos_finais[t_td] = float(df_hoje[mask].iloc[0]['PU Base Manha'])
+        except: pass
+
+    # --- GRAVAÇÃO ---
+    output = []
+    for t in df_assets['ticker'].unique():
+        ts = str(t).strip()
+        if not ts: continue
+        v = precos_preservados.get(ts, 1.0) if ts in tickers_manuais else precos_finais.get(ts, 1.0)
+        output.append([ts, float(v), agora])
+    
+    if 'USDBRL=X' in precos_finais: output.append(['USDBRL=X', float(precos_finais['USDBRL=X']), agora])
+
+    ws_market.clear()
+    ws_market.update(values=[['ticker', 'close_price', 'last_update']] + output, range_name='A1', value_input_option='RAW')
+    print(f"✅ Preços atualizados com mapeamento interno: {agora}")
+
+if __name__ == "__main__":
+    update_prices()
