@@ -1,0 +1,53 @@
+name: Update Investment Data
+
+on:
+  schedule:
+    # Atualiza preços de hora em hora entre 10h e 18h (Horário de Brasília/Pregão)
+    # Cron usa UTC, então 13:00 às 21:00 UTC = 10:00 às 18:00 BRT
+    - cron: '0 13-21 * * 1-5'
+    # Atualiza dividendos uma vez ao dia às 09:00 BRT (12:00 UTC)
+    - cron: '0 12 * * *'
+  workflow_dispatch: # Permite rodar manualmente pelo botão no GitHub
+
+jobs:
+  update-prices:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/checkout@v3
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          pip install yfinance pandas gspread google-auth requests
+
+      - name: Run Price Update
+        env:
+          GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
+        run: python update_market_data.py
+
+  update-dividends:
+    # Este job roda apenas no gatilho das 12h UTC ou manual
+    if: github.event.schedule == '0 12 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/checkout@v3
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          pip install yfinance pandas gspread google-auth
+
+      - name: Run Dividend Update
+        env:
+          GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
+        run: python update_dividends.py
