@@ -6,7 +6,7 @@ import os
 import json
 import datetime
 
-def update_dividend_history():
+def audit_dividends():
     ID_PLANILHA = "1agsg85drPHHQQHPgUdBKiNQ9_riqV3ZvNxbaZ3upSx8"
     
     try:
@@ -18,71 +18,70 @@ def update_dividend_history():
         print(f"❌ Erro Autenticação: {e}")
         return
 
-    # 1. Carregar Transações para saber o que e quando comprou
+    # 1. Carregar Dados
     df_trans = pd.DataFrame(sh.worksheet("transactions").get_all_records())
     df_trans.columns = [c.lower().strip() for c in df_trans.columns]
     df_trans['date'] = pd.to_datetime(df_trans['date'], dayfirst=True)
     
-    # 2. Carregar Assets para saber os tipos
     df_assets = pd.DataFrame(sh.worksheet("assets").get_all_records())
     df_assets.columns = [c.lower().strip() for c in df_assets.columns]
 
-    historico_recebido = []
+    historico_calculado = []
 
-    print(f"🔎 Iniciando auditoria histórica para {len(df_trans['ticker'].unique())} ativos...")
+    # 2. Iterar por cada ativo da carteira
+    tickers = df_trans['ticker'].unique()
+    print(f"🔎 Iniciando auditoria histórica para {len(tickers)} ativos...")
 
-    for ticker in df_trans['ticker'].unique():
+    for ticker in tickers:
         t = str(ticker).strip()
         if not t: continue
         
-        # Descobrir a data da primeira compra deste ativo
-        data_inicio = df_trans[df_trans['ticker'] == t]['date'].min()
+        # Filtra transações deste ativo e ordena por data
+        min_date = df_trans[df_trans['ticker'] == t]['date'].min()
         tipo = df_assets[df_assets['ticker'] == t]['type'].values[0] if t in df_assets['ticker'].values else ""
-
+        
         try:
-            # Ajuste de sufixo para Yahoo
+            # Busca histórico no Yahoo (melhor fonte para dados retroativos)
             t_yf = f"{t}.SA" if tipo in ['ACAO_BR', 'FII', 'BDR', 'ETF_BR'] and not t.endswith('.SA') else t
             asset = yf.Ticker(t_yf)
             
-            # Baixa todo o histórico de dividendos
-            divs = asset.actions # Inclui Dividends e Splits
-            if divs.empty: continue
-
-            # Filtra apenas dividendos após a primeira compra
-            divs = divs[divs.index >= data_inicio]
+            # Pegamos o histórico de ações (inclui dividendos e splits)
+            hist_divs = asset.actions
+            if hist_divs.empty: continue
             
-            for date_ex, row in divs.iterrows():
+            # Filtra apenas dividendos a partir da primeira compra
+            relevant_divs = hist_divs[hist_divs.index >= min_date]
+            
+            for date_ex, row in relevant_divs.iterrows():
                 if row['Dividends'] == 0: continue
                 
-                # Regra de Ouro: Quantas ações você tinha ANTES da data ex?
-                qtd_na_data = df_trans[(df_trans['ticker'] == t) & (df_trans['date'] < date_ex)]['quantity'].sum()
+                # CRUCIAL: Quantas ações você tinha ANTES dessa Data Ex?
+                # Soma todas as compras/vendas com data inferior à data ex do dividendo
+                qtd_na_epoca = df_trans[(df_trans['ticker'] == t) & (df_trans['date'] < date_ex.replace(tzinfo=None))]['quantity'].sum()
                 
-                if qtd_na_data > 0:
-                    valor_total = row['Dividends'] * qtd_na_data
-                    historico_recebido.append([
+                if qtd_na_epoca > 0:
+                    total_recebido = row['Dividends'] * qtd_na_epoca
+                    historico_calculado.append([
                         t,
                         date_ex.strftime('%d/%m/%Y'),
-                        row['Dividends'],
-                        qtd_na_data,
-                        valor_total,
+                        float(row['Dividends']),
+                        float(qtd_na_epoca),
+                        float(total_recebido),
                         datetime.datetime.now().strftime('%d/%m/%Y %H:%M')
                     ])
-                    print(f"✅ {t}: Recebido R$ {valor_total:.2f} em {date_ex.date()}")
-        except:
-            continue
+        except Exception as e:
+            print(f"⚠️ Erro ao auditar {t}: {e}")
 
-    # 3. Salvar na aba 'dividend_history' (Crie esta aba se não existir)
+    # 3. Salvar na aba específica
     try:
         ws_hist = sh.worksheet("dividend_history")
-    except:
-        ws_hist = sh.add_worksheet(title="dividend_history", rows="1000", cols="6")
-
-    ws_hist.clear()
-    headers = [['Ticker', 'Data Ex', 'Valor Unitario', 'Qtd na Epoca', 'Total Recebido', 'Atualizado em']]
-    if historico_recebido:
-        ws_hist.update(values=headers + historico_recebido, range_name='A1')
-    
-    print("✅ Auditoria finalizada e salva na aba 'dividend_history'.")
+        ws_hist.clear()
+        headers = [['Ticker', 'Data Ex', 'Valor Unitario', 'Qtd na Epoca', 'Total Recebido', 'Atualizado em']]
+        if historico_calculado:
+            ws_hist.update(values=headers + historico_calculado, range_name='A1')
+        print(f"✅ Auditoria finalizada: {len(historico_calculado)} registros de proventos encontrados.")
+    except Exception as e:
+        print(f"❌ Erro ao salvar na planilha: {e}")
 
 if __name__ == "__main__":
-    update_dividend_history()
+    audit_dividends()
