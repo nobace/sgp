@@ -29,14 +29,17 @@ def update_dividends():
     df_p = df_assets[df_assets['type'].isin(tipos_pagadores)]
 
     proventos = []
-    print(f"🔎 Buscando dividendos (Mapeamento .SA ativo)...")
+    print(f"🔎 Buscando dividendos (BDRs agora mapeadas com .SA)...")
 
     for _, row in df_p.iterrows():
         t_orig = str(row['ticker']).strip()
         if not t_orig: continue
         
-        # Tradução apenas para consulta
-        t_yahoo = f"{t_orig}.SA" if row['type'] in ['ACAO_BR', 'FII', 'ETF_BR'] and not t_orig.endswith('.SA') else t_orig
+        # BDRs incluídas na lógica do sufixo .SA
+        if row['type'] in ['ACAO_BR', 'FII', 'ETF_BR', 'BDR'] and not t_orig.endswith('.SA'):
+            t_yahoo = f"{t_orig}.SA"
+        else:
+            t_yahoo = t_orig
         
         try:
             asset = yf.Ticker(t_yahoo)
@@ -53,7 +56,7 @@ def update_dividends():
     ws_calendar.clear()
     headers = [['Ticker', 'Data Ref', 'Valor', 'Status', 'Consultado em']]
     ws_calendar.update(values=headers + (proventos if proventos else [['-', '-', '-', '-', agora]]), range_name='A1')
-    print("✅ Calendário de dividendos atualizado.")
+    print("✅ Agenda de dividendos atualizada com BDRs corrigidas.")
 
 if __name__ == "__main__":
     update_dividends()
