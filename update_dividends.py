@@ -30,63 +30,62 @@ def update_dividends():
     proventos = []
     tickers_com_sucesso = set()
 
+    # 1. CONSULTA BRAPI (Ativos BR)
+    # Filtramos apenas Ações e FIIs
     ativos_br = df_assets[df_assets['type'].isin(['ACAO_BR', 'FII', 'ETF_BR'])]['ticker'].tolist()
     
     if ativos_br and BRAPI_TOKEN:
-        print(f"🔎 Brapi: Iniciando consulta de {len(ativos_br)} ativos...")
+        print(f"🔎 Brapi: Solicitando dados fundamentais de {len(ativos_br)} ativos...")
         
-        # Lotes de 10 ativos para balancear performance e segurança
         for i in range(0, len(ativos_br), 10):
             lote = [str(t).strip() for t in ativos_br[i:i+10]]
             tickers_str = ",".join(lote)
-            url = f"https://brapi.dev/api/quote/{tickers_str}?token={BRAPI_TOKEN}&dividends=true"
+            # ADICIONADO: fundamental=true para garantir vinda dos proventos
+            url = f"https://brapi.dev/api/quote/{tickers_str}?token={BRAPI_TOKEN}&fundamental=true&dividends=true"
             
             try:
-                response = requests.get(url, timeout=30, verify=True)
-                if response.status_code != 200:
-                    print(f"⚠️ Brapi retornou erro {response.status_code}: {response.text}")
-                    continue
-                
+                response = requests.get(url, timeout=30)
                 res = response.json()
                 results = res.get('results', [])
                 
                 for stock in results:
                     t = stock.get('symbol')
-                    # Tenta extrair dividendos
+                    # Tenta capturar proventos em diferentes locais do JSON (Brapi varia por ativo)
                     divs_data = stock.get('dividendsData', {})
-                    divs_list = divs_data.get('cashDividends', []) if divs_data else []
+                    divs_list = []
+                    if divs_data:
+                        divs_list = divs_data.get('cashDividends', [])
                     
+                    # Se não veio em cashDividends, tentamos o resumo de proventos
                     if not divs_list:
-                        continue # Pula se não tiver dados de proventos
-                        
-                    item = divs_list[0]
-                    # Busca Data Ex
-                    d_ex_raw = item.get('lastDateCom') or item.get('date') or item.get('exDate')
-                    if not d_ex_raw: continue
-                    
-                    try:
-                        d_ex = datetime.datetime.fromisoformat(d_ex_raw.split('T')[0]).strftime('%d/%m/%Y')
-                        d_pg_raw = item.get('paymentDate') or item.get('payDate')
-                        
-                        if d_pg_raw and d_pg_raw != "0000-00-00":
-                            d_pg = datetime.datetime.fromisoformat(d_pg_raw.split('T')[0]).strftime('%d/%m/%Y')
-                            status = "Confirmado"
-                        else:
-                            d_pg = "A confirmar"
-                            status = "Anunciado"
-                        
-                        valor = float(item.get('rate', 0))
-                        proventos.append([t, d_ex, d_pg, valor, status, agora_dt.strftime('%d/%m/%Y %H:%M')])
-                        tickers_com_sucesso.add(t)
-                        print(f"✅ {t}: {status} (R$ {valor})")
-                    except Exception as e:
-                        print(f"⚠️ Erro ao processar ticker {t}: {e}")
-            except Exception as e:
-                print(f"❌ Falha na conexão com a Brapi: {e}")
+                        divs_list = stock.get('proventos', []) # Fallback para alguns tipos de retorno
 
-    # 2. YAHOO FALLBACK (BDRs e ativos que a Brapi ignorou)
+                    if divs_list:
+                        item = divs_list[0]
+                        d_ex_raw = item.get('lastDateCom') or item.get('date') or item.get('exDate')
+                        
+                        if d_ex_raw:
+                            try:
+                                d_ex = datetime.datetime.fromisoformat(d_ex_raw.split('T')[0]).strftime('%d/%m/%Y')
+                                d_pg_raw = item.get('paymentDate') or item.get('payDate')
+                                
+                                if d_pg_raw and d_pg_raw != "0000-00-00":
+                                    d_pg = datetime.datetime.fromisoformat(d_pg_raw.split('T')[0]).strftime('%d/%m/%Y')
+                                    status = "Confirmado"
+                                else:
+                                    d_pg = "A confirmar"
+                                    status = "Anunciado"
+                                
+                                valor = float(item.get('rate', 0))
+                                proventos.append([t, d_ex, d_pg, valor, status, agora_dt.strftime('%d/%m/%Y %H:%M')])
+                                tickers_com_sucesso.add(t)
+                                print(f"✅ {t}: {status}")
+                            except: continue
+            except: continue
+
+    # 2. YAHOO FALLBACK
     restantes = df_assets[~df_assets['ticker'].isin(tickers_com_sucesso)]
-    print(f"🔎 Yahoo: Consultando {len(restantes)} ativos remanescentes...")
+    print(f"🔎 Yahoo: Processando {len(restantes)} ativos remanescentes...")
     
     for _, row in restantes.iterrows():
         t = str(row['ticker']).strip()
@@ -106,12 +105,11 @@ def update_dividends():
     ws_calendar.clear()
     headers = [['Ticker', 'Data Ex', 'Data Pagamento', 'Valor', 'Status', 'Atualizado em']]
     if proventos:
-        # Ordenação por Status
         rank = {"Confirmado": 0, "Anunciado": 1, "Histórico": 2}
         proventos.sort(key=lambda x: rank.get(x[4], 3))
         ws_calendar.update(values=headers + proventos, range_name='A1')
     
-    print(f"--- FIM: {len(proventos)} ativos processados ---")
+    print(f"--- FIM: {len(proventos)} ativos atualizados em {agora_dt.strftime('%H:%M')} ---")
 
 if __name__ == "__main__":
     update_dividends()
