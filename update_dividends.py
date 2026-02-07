@@ -18,7 +18,7 @@ def update_dividends():
         client = gspread.authorize(creds)
         sh = client.open_by_key(ID_PLANILHA)
     except Exception as e:
-        print(f"❌ Erro Autenticação: {e}")
+        print(f"❌ Erro Autenticação Google: {e}")
         return
 
     ws_assets = sh.worksheet("assets")
@@ -33,65 +33,82 @@ def update_dividends():
     ativos_br = df_assets[df_assets['type'].isin(['ACAO_BR', 'FII', 'ETF_BR'])]['ticker'].tolist()
     
     if ativos_br and BRAPI_TOKEN:
-        print(f"🔎 Brapi: Consultando {len(ativos_br)} ativos em mini-lotes...")
-        # Lotes de 5 para garantir que a API processe os dividendos de cada um
-        for i in range(0, len(ativos_br), 5):
-            lote = ativos_br[i:i+5]
-            tickers_str = ",".join([str(t).strip() for t in lote])
-            # Adicionamos fundamental=true e dividends=true
-            url = f"https://brapi.dev/api/quote/{tickers_str}?token={BRAPI_TOKEN}&fundamental=true&dividends=true"
+        print(f"🔎 Brapi: Iniciando consulta de {len(ativos_br)} ativos...")
+        
+        # Lotes de 10 ativos para balancear performance e segurança
+        for i in range(0, len(ativos_br), 10):
+            lote = [str(t).strip() for t in ativos_br[i:i+10]]
+            tickers_str = ",".join(lote)
+            url = f"https://brapi.dev/api/quote/{tickers_str}?token={BRAPI_TOKEN}&dividends=true"
             
             try:
-                res = requests.get(url, timeout=30).json()
-                for stock in res.get('results', []):
+                response = requests.get(url, timeout=30, verify=True)
+                if response.status_code != 200:
+                    print(f"⚠️ Brapi retornou erro {response.status_code}: {response.text}")
+                    continue
+                
+                res = response.json()
+                results = res.get('results', [])
+                
+                for stock in results:
                     t = stock.get('symbol')
-                    # Buscamos em todas as chaves possíveis de dividendos
+                    # Tenta extrair dividendos
                     divs_data = stock.get('dividendsData', {})
-                    divs_list = divs_data.get('cashDividends', [])
+                    divs_list = divs_data.get('cashDividends', []) if divs_data else []
                     
-                    if divs_list:
-                        # Pegamos o mais recente que tenha data
-                        item = divs_list[0]
-                        d_ex_raw = item.get('lastDateCom') or item.get('date')
+                    if not divs_list:
+                        continue # Pula se não tiver dados de proventos
                         
-                        if d_ex_raw:
-                            d_ex = datetime.datetime.fromisoformat(d_ex_raw.split('T')[0]).strftime('%d/%m/%Y')
-                            d_pg_raw = item.get('paymentDate')
-                            
-                            if d_pg_raw and d_pg_raw != "0000-00-00":
-                                d_pg = datetime.datetime.fromisoformat(d_pg_raw.split('T')[0]).strftime('%d/%m/%Y')
-                                status = "Confirmado"
-                            else:
-                                d_pg = "A confirmar"
-                                status = "Anunciado"
-                            
-                            proventos.append([t, d_ex, d_pg, float(item.get('rate', 0)), status, agora_dt.strftime('%d/%m/%Y %H:%M')])
-                            tickers_com_sucesso.add(t)
-                            print(f"✅ {t}: {status}")
-            except: continue
+                    item = divs_list[0]
+                    # Busca Data Ex
+                    d_ex_raw = item.get('lastDateCom') or item.get('date') or item.get('exDate')
+                    if not d_ex_raw: continue
+                    
+                    try:
+                        d_ex = datetime.datetime.fromisoformat(d_ex_raw.split('T')[0]).strftime('%d/%m/%Y')
+                        d_pg_raw = item.get('paymentDate') or item.get('payDate')
+                        
+                        if d_pg_raw and d_pg_raw != "0000-00-00":
+                            d_pg = datetime.datetime.fromisoformat(d_pg_raw.split('T')[0]).strftime('%d/%m/%Y')
+                            status = "Confirmado"
+                        else:
+                            d_pg = "A confirmar"
+                            status = "Anunciado"
+                        
+                        valor = float(item.get('rate', 0))
+                        proventos.append([t, d_ex, d_pg, valor, status, agora_dt.strftime('%d/%m/%Y %H:%M')])
+                        tickers_com_sucesso.add(t)
+                        print(f"✅ {t}: {status} (R$ {valor})")
+                    except Exception as e:
+                        print(f"⚠️ Erro ao processar ticker {t}: {e}")
+            except Exception as e:
+                print(f"❌ Falha na conexão com a Brapi: {e}")
 
-    # 2. YAHOO FALLBACK
+    # 2. YAHOO FALLBACK (BDRs e ativos que a Brapi ignorou)
     restantes = df_assets[~df_assets['ticker'].isin(tickers_com_sucesso)]
-    print(f"🔎 Yahoo: Consultando {len(restantes)} ativos...")
+    print(f"🔎 Yahoo: Consultando {len(restantes)} ativos remanescentes...")
+    
     for _, row in restantes.iterrows():
         t = str(row['ticker']).strip()
         tipo = str(row['type']).upper()
         if tipo not in ['ACAO_BR', 'FII', 'BDR', 'ETF_US', 'ETF_BR']: continue
+        
         try:
             t_yf = f"{t}.SA" if tipo in ['ACAO_BR', 'FII', 'BDR', 'ETF_BR'] and not t.endswith('.SA') else t
             asset = yf.Ticker(t_yf)
             hist = asset.dividends
             if not hist.empty:
-                proventos.append([t, hist.index[-1].strftime('%d/%m/%Y'), "Histórico", float(hist.iloc[-1]), "Histórico", agora_dt.strftime('%d/%m/%Y %H:%M')])
+                val = float(hist.iloc[-1])
+                proventos.append([t, hist.index[-1].strftime('%d/%m/%Y'), "Histórico", val, "Histórico", agora_dt.strftime('%d/%m/%Y %H:%M')])
         except: continue
 
-    # 3. LIMPEZA E GRAVAÇÃO (Forçando a atualização)
+    # 3. GRAVAÇÃO
     ws_calendar.clear()
+    headers = [['Ticker', 'Data Ex', 'Data Pagamento', 'Valor', 'Status', 'Atualizado em']]
     if proventos:
-        headers = [['Ticker', 'Data Ex', 'Data Pagamento', 'Valor', 'Status', 'Atualizado em']]
-        # Ordenação: Confirmado > Anunciado > Histórico
-        prioridade = {"Confirmado": 0, "Anunciado": 1, "Histórico": 2}
-        proventos.sort(key=lambda x: prioridade.get(x[4], 3))
+        # Ordenação por Status
+        rank = {"Confirmado": 0, "Anunciado": 1, "Histórico": 2}
+        proventos.sort(key=lambda x: rank.get(x[4], 3))
         ws_calendar.update(values=headers + proventos, range_name='A1')
     
     print(f"--- FIM: {len(proventos)} ativos processados ---")
