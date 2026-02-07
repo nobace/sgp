@@ -51,19 +51,19 @@ def update_prices():
     precos_preservados = {str(row[0]).strip(): clean_val(row[1]) for row in dados_market_atuais[1:]} if len(dados_market_atuais) > 1 else {}
     precos_finais = {}
 
-    # --- MAPEAMENTO PARA YAHOO FINANCE ---
-    tipos_br = ['ACAO_BR', 'FII', 'ETF_BR', 'BDR']
-    tipos_us_bdr = ['ETF_US']
-    mapa_tickers = {} # Yahoo_Ticker -> Planilha_Ticker
+    # --- MAPEAMENTO PARA YAHOO FINANCE (BDR INCLUÍDA NO .SA) ---
+    tipos_sa = ['ACAO_BR', 'FII', 'ETF_BR', 'BDR']
+    tipos_direto = ['ETF_US']
+    mapa_tickers = {}
 
     for _, row in df_assets.iterrows():
         t_orig = str(row['ticker']).strip()
         if not t_orig or t_orig in tickers_manuais: continue
         
-        if row['type'] in tipos_br:
+        if row['type'] in tipos_sa:
             t_yahoo = f"{t_orig}.SA" if not t_orig.endswith('.SA') else t_orig
             mapa_tickers[t_yahoo] = t_orig
-        elif row['type'] in tipos_us_bdr:
+        elif row['type'] in tipos_direto:
             mapa_tickers[t_orig] = t_orig
 
     tickers_yahoo = list(mapa_tickers.keys())
@@ -79,7 +79,7 @@ def update_prices():
                     val = data_yf[ty]['Close'].iloc[-1] if len(tickers_yahoo) > 1 else data_yf['Close'].iloc[-1]
                     if pd.notnull(val): precos_finais[tp] = float(val)
                 except: pass
-        except Exception as e: print(f"⚠️ Erro Yahoo: {e}")
+        except: pass
 
     # --- CVM (FUNDOS) ---
     df_fundos = df_assets[(df_assets['type'] == 'FUNDO') & (~df_assets['ticker'].isin(tickers_manuais))]
@@ -123,14 +123,14 @@ def update_prices():
     for t in df_assets['ticker'].unique():
         ts = str(t).strip()
         if not ts: continue
-        v = precos_preservados.get(ts, 1.0) if ts in tickers_manuais else precos_finais.get(ts, 1.0)
+        v = precos_finais.get(ts, precos_preservados.get(ts, 1.0))
         output.append([ts, float(v), agora])
     
     if 'USDBRL=X' in precos_finais: output.append(['USDBRL=X', float(precos_finais['USDBRL=X']), agora])
 
     ws_market.clear()
     ws_market.update(values=[['ticker', 'close_price', 'last_update']] + output, range_name='A1', value_input_option='RAW')
-    print(f"✅ Preços atualizados com mapeamento interno: {agora}")
+    print(f"✅ Preços atualizados (BDRs agora com .SA): {agora}")
 
 if __name__ == "__main__":
     update_prices()
