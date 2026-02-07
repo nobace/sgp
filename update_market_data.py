@@ -52,8 +52,8 @@ def update_prices():
     precos_finais = {}
 
     # --- MAPEAMENTO PARA YAHOO FINANCE ---
-    tipos_br = ['ACAO_BR', 'FII', 'ETF_BR']
-    tipos_us_bdr = ['BDR', 'ETF_US']
+    tipos_br = ['ACAO_BR', 'FII', 'ETF_BR', 'BDR']
+    tipos_us_bdr = ['ETF_US']
     mapa_tickers = {} # Yahoo_Ticker -> Planilha_Ticker
 
     for _, row in df_assets.iterrows():
