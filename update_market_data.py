@@ -20,7 +20,7 @@ def get_tesouro_url():
     except: pass
     return "https://www.tesourotransparente.gov.br/ckan/dataset/df56aa42-484a-4a59-8184-7676580c81e3/resource/796d2059-14e9-44e3-80c9-2d9e30b405c1/download/precotaxatesourodireto.csv"
 
-def update_all_market_data():
+def update_prices():
     ID_PLANILHA = "1agsg85drPHHQQHPgUdBKiNQ9_riqV3ZvNxbaZ3upSx8"
     try:
         info = json.loads(os.environ['GOOGLE_SHEETS_CREDS'])
@@ -31,7 +31,6 @@ def update_all_market_data():
         print(f"❌ Erro Autenticação: {e}")
         return
 
-    # --- 1. LEITURA DE ASSETS E CONFIGURAÇÃO ---
     ws_assets = sh.worksheet("assets")
     df_assets = pd.DataFrame(ws_assets.get_all_records())
     df_assets.columns = [c.lower().strip() for c in df_assets.columns]
@@ -39,7 +38,6 @@ def update_all_market_data():
     tickers_manuais = df_assets[df_assets['manual_update'].astype(str).str.upper().isin(['S', 'SIM', '1', 'TRUE'])]['ticker'].unique().tolist()
     agora = datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')
 
-    # --- 2. PREPARAÇÃO MARKET DATA ---
     ws_market = sh.worksheet("market_data")
     dados_market_atuais = ws_market.get_all_values()
     
@@ -53,7 +51,7 @@ def update_all_market_data():
     precos_preservados = {str(row[0]).strip(): clean_val(row[1]) for row in dados_market_atuais[1:]} if len(dados_market_atuais) > 1 else {}
     precos_finais = {}
 
-    # --- 3. YAHOO FINANCE (Ações, FIIs, BDRs, ETFs e DÓLAR) ---
+    # Yahoo Finance (Ações, FIIs, BDRs, ETFs e Dólar)
     tipos_yahoo = ['ACAO_BR', 'FII', 'BDR', 'ETF_BR', 'ETF_US']
     tickers_auto = [str(t).strip() for t in df_assets[(df_assets['type'].isin(tipos_yahoo)) & (~df_assets['ticker'].isin(tickers_manuais))]['ticker'].unique() if t]
     tickers_auto.append('USDBRL=X')
@@ -68,13 +66,11 @@ def update_all_market_data():
                 except: pass
         except Exception as e: print(f"⚠️ Erro Yahoo: {e}")
 
-    # --- 4. CVM (FUNDOS DE INVESTIMENTO) ---
+    # CVM (Fundos)
     df_fundos = df_assets[(df_assets['type'] == 'FUNDO') & (~df_assets['ticker'].isin(tickers_manuais))]
-    mapa_cnpjs = {str(r['isin_cnpj']).replace('.','').replace('-','').replace('/','').zfill(14): str(r['ticker']).strip() 
-                  for _, r in df_fundos.iterrows() if r.get('isin_cnpj')}
-    
+    mapa_cnpjs = {str(r['isin_cnpj']).replace('.','').replace('-','').replace('/','').zfill(14): str(r['ticker']).strip() for _, r in df_fundos.iterrows() if r.get('isin_cnpj')}
     if mapa_cnpjs:
-        for i in range(2): # Tenta o mês atual e o anterior
+        for i in range(2):
             mes = (datetime.date.today() - datetime.timedelta(days=i*28)).strftime('%Y%m')
             url = f"https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_{mes}.zip"
             try:
@@ -90,7 +86,7 @@ def update_all_market_data():
                     break
             except: continue
 
-    # --- 5. TESOURO DIRETO ---
+    # Tesouro Direto
     df_td_assets = df_assets[(df_assets['type'] == 'TESOURO') & (~df_assets['ticker'].isin(tickers_manuais))]
     if not df_td_assets.empty:
         try:
@@ -107,51 +103,19 @@ def update_all_market_data():
                 if not df_hoje[mask].empty: precos_finais[t_td] = float(df_hoje[mask].iloc[0]['PU Base Manha'])
         except: pass
 
-    # --- 6. GRAVAÇÃO MARKET DATA ---
-    output_market = []
+    # Gravação
+    output = []
     for t in df_assets['ticker'].unique():
         t_str = str(t).strip()
         if not t_str: continue
         val = precos_preservados.get(t_str, 1.0) if t_str in tickers_manuais else precos_finais.get(t_str, 1.0)
-        output_market.append([t_str, float(val), agora])
+        output.append([t_str, float(val), agora])
     
-    # Adiciona o Dólar se tiver sido capturado
-    if 'USDBRL=X' in precos_finais:
-        output_market.append(['USDBRL=X', float(precos_finais['USDBRL=X']), agora])
+    if 'USDBRL=X' in precos_finais: output.append(['USDBRL=X', float(precos_finais['USDBRL=X']), agora])
 
     ws_market.clear()
-    ws_market.update(values=[['ticker', 'close_price', 'last_update']] + output_market, range_name='A1', value_input_option='RAW')
-
-    # --- 7. ABA: DIVIDEND_CALENDAR ---
-    try:
-        ws_calendar = sh.worksheet("dividend_calendar")
-    except:
-        ws_calendar = sh.add_worksheet(title="dividend_calendar", rows="100", cols="5")
-
-    proventos_agenda = []
-    tipos_pagadores = ['ACAO_BR', 'FII', 'BDR', 'ETF_US', 'ETF_BR']
-    tickers_pagadores = df_assets[df_assets['type'].isin(tipos_pagadores)]['ticker'].unique().tolist()
-
-    for t in tickers_pagadores:
-        try:
-            asset = yf.Ticker(t)
-            cal = asset.calendar
-            if cal is not None and 'Dividend Date' in cal:
-                proventos_agenda.append([t, cal['Dividend Date'].strftime('%d/%m/%Y'), cal.get('Dividend', 0), "Previsto", agora])
-            else:
-                info = asset.info
-                if 'lastDividendValue' in info and info['lastDividendValue']:
-                    proventos_agenda.append([t, "Último Pago", info['lastDividendValue'], "Histórico", agora])
-        except: continue
-
-    ws_calendar.clear()
-    headers_cal = [['Ticker', 'Data Ref', 'Valor', 'Status', 'Consultado em']]
-    if proventos_agenda:
-        ws_calendar.update(values=headers_cal + proventos_agenda, range_name='A1')
-    else:
-        ws_calendar.update(values=headers_cal + [['Nenhum dado encontrado', '-', '-', '-', agora]], range_name='A1')
-
-    print(f"✅ Atualização Completa Realizada: {agora}")
+    ws_market.update(values=[['ticker', 'close_price', 'last_update']] + output, range_name='A1', value_input_option='RAW')
+    print(f"✅ Preços atualizados: {agora}")
 
 if __name__ == "__main__":
-    update_all_market_data()
+    update_prices()
