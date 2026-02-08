@@ -102,7 +102,11 @@ def update_prices():
     precos_google_backup = {str(r['ticker']).strip(): clean_val(r.get('price_google', 0)) for _, r in df_assets.iterrows()}
     
     tickers_manuais = df_assets[df_assets['manual_update'].astype(str).str.upper().isin(['S', 'SIM', '1', 'TRUE'])]['ticker'].unique().tolist()
-    agora = datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+    
+    # --- CORREÇÃO DO FUSO HORÁRIO (GMT -3) ---
+    fuso_gmt3 = datetime.timezone(datetime.timedelta(hours=-3))
+    agora = datetime.datetime.now(fuso_gmt3).strftime('%d/%m/%Y %H:%M:%S')
+    # ----------------------------------------
 
     ws_market = sh.worksheet("market_data")
     dados_market_atuais = ws_market.get_all_values()
@@ -200,7 +204,7 @@ def update_prices():
                     with io.BytesIO(resp.content) as zip_buffer:
                          df_cvm = pd.read_csv(zip_buffer, sep=';', compression='zip', encoding='latin1', low_memory=False)
                     
-                    # CORREÇÃO CRÍTICA: Identifica o nome correto da coluna de CNPJ
+                    # Correção para nome dinâmico da coluna
                     col_cnpj = 'CNPJ_FUNDO'
                     if 'CNPJ_FUNDO_CLASSE' in df_cvm.columns:
                         col_cnpj = 'CNPJ_FUNDO_CLASSE'
@@ -218,7 +222,6 @@ def update_prices():
                             val_cota = float(cvm_dict[cnpj])
                             precos_finais[ticker] = val_cota
                             fundos_encontrados += 1
-                            # print(f"      ✅ {ticker}: {val_cota}") # Debug da precisão
                     
                     if fundos_encontrados >= len(mapa_cnpjs) * 0.8:
                         break 
@@ -250,11 +253,25 @@ def update_prices():
     # --- GRAVAÇÃO ---
     print("--- 💾 Salvando no Google Sheets ---")
     output = []
+    # Garante que usamos a chave original da planilha asset
     for t in df_assets['ticker'].unique():
         ts = str(t).strip()
         if not ts: continue
         
+        # Procura preço usando o ticker original ou o novo mapeado
         ts_mapped = RENAME_MAP.get(ts, ts)
-        v = precos_finais.get(ts_mapped, precos_finais.get(ts, precos_preservados.get(ts, 1.0)))
         
+        v = precos_finais.get(ts_mapped, precos_finais.get(ts, precos_preservados.get(ts, 1.0)))
         output.append([ts, float(v), agora])
+    
+    # Adiciona dolar
+    if 'USDBRL=X' in precos_finais: 
+        output.append(['USDBRL=X', float(precos_finais['USDBRL=X']), agora])
+
+    ws_market.clear()
+    # USER_ENTERED garante que o Google Sheets interprete o número com precisão total
+    ws_market.update(values=[['ticker', 'close_price', 'last_update']] + output, range_name='A1', value_input_option='USER_ENTERED')
+    print(f"✅ Atualização de preços concluída: {agora}")
+
+if __name__ == "__main__":
+    update_prices()
