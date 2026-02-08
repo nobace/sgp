@@ -56,6 +56,7 @@ def update_prices():
     precos_finais = {}
 
     # --- YAHOO FINANCE ---
+    print("--- 🔍 Yahoo Finance ---")
     tipos_sa = ['ACAO_BR', 'FII', 'ETF_BR', 'BDR']
     mapa_tickers = {}
 
@@ -92,28 +93,45 @@ def update_prices():
             val_backup = precos_google_backup.get(ts, 0)
             if val_backup > 0:
                 precos_finais[ts] = val_backup
-                print(f"⚠️ {ts}: Usando backup do Google Finance")
+                print(f"⚠️ {ts}: Usando backup do Google Finance (Pode ter baixa precisão)")
 
     # --- CVM (FUNDOS) ---
+    print("--- 🔍 CVM (Fundos) ---")
     df_fundos = df_assets[(df_assets['type'] == 'FUNDO') & (~df_assets['ticker'].isin(tickers_manuais))]
     mapa_cnpjs = {str(r['isin_cnpj']).replace('.','').replace('-','').replace('/','').zfill(14): str(r['ticker']).strip() for _, r in df_fundos.iterrows() if r.get('isin_cnpj')}
+    
+    fundos_encontrados = 0
     if mapa_cnpjs:
         for i in range(2):
             mes = (datetime.date.today() - datetime.timedelta(days=i*28)).strftime('%Y%m')
             url = f"https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_{mes}.zip"
+            print(f"   Baixando dados CVM: {mes}...")
             try:
-                resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+                resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60)
                 if resp.status_code == 200:
-                    df_cvm = pd.read_csv(io.BytesIO(resp.content), sep=';', compression='zip', encoding='latin1')
+                    # low_memory=False para garantir leitura correta de floats
+                    df_cvm = pd.read_csv(io.BytesIO(resp.content), sep=';', compression='zip', encoding='latin1', low_memory=False)
                     df_cvm['cnpj_key'] = df_cvm['CNPJ_FUNDO'].str.replace(r'\D', '', regex=True).str.zfill(14)
                     df_cvm = df_cvm.drop_duplicates('cnpj_key', keep='last')
+                    
                     cvm_dict = df_cvm.set_index('cnpj_key')['VL_QUOTA'].to_dict()
+                    
                     for cnpj, ticker in mapa_cnpjs.items():
-                        if cnpj in cvm_dict: precos_finais[ticker] = float(cvm_dict[cnpj])
-                    break
-            except: continue
+                        if cnpj in cvm_dict: 
+                            val_cota = float(cvm_dict[cnpj])
+                            precos_finais[ticker] = val_cota
+                            fundos_encontrados += 1
+                            # print(f"      ✅ {ticker}: {val_cota}") # Debug se precisar
+                    
+                    if fundos_encontrados > 0:
+                        break # Se achou dados nesse mês, não precisa buscar no anterior
+            except Exception as e: 
+                print(f"   Erro ao baixar CVM {mes}: {e}")
+                continue
+    print(f"   Fundos atualizados via CVM: {fundos_encontrados}/{len(mapa_cnpjs)}")
 
     # --- TESOURO DIRETO ---
+    print("--- 🔍 Tesouro Direto ---")
     df_td_assets = df_assets[(df_assets['type'] == 'TESOURO') & (~df_assets['ticker'].isin(tickers_manuais))]
     if not df_td_assets.empty:
         try:
@@ -131,6 +149,7 @@ def update_prices():
         except: pass
 
     # --- GRAVAÇÃO ---
+    print("--- 💾 Salvando no Google Sheets ---")
     output = []
     for t in df_assets['ticker'].unique():
         ts = str(t).strip()
@@ -141,7 +160,9 @@ def update_prices():
     if 'USDBRL=X' in precos_finais: output.append(['USDBRL=X', float(precos_finais['USDBRL=X']), agora])
 
     ws_market.clear()
-    ws_market.update(values=[['ticker', 'close_price', 'last_update']] + output, range_name='A1', value_input_option='RAW')
+    # MUDANÇA IMPORTANTE: value_input_option='USER_ENTERED'
+    # Isso força o Google Sheets a interpretar o número com precisão total, ignorando formatações visuais antigas na entrada.
+    ws_market.update(values=[['ticker', 'close_price', 'last_update']] + output, range_name='A1', value_input_option='USER_ENTERED')
     print(f"✅ Atualização de preços concluída: {agora}")
 
 if __name__ == "__main__":
