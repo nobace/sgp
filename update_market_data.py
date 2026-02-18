@@ -94,7 +94,7 @@ def update_prices():
     def clean_val(val):
         if val is None or val == "" or val == "close_price": return 0.0
         s = str(val).strip()
-        #if "," in s: s = s.replace(".", "").replace(",", ".")
+        if "," in s: s = s.replace(".", "").replace(",", ".")
         try: return float(s)
         except: return 0.0
 
